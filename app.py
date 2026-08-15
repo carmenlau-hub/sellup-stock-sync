@@ -46,15 +46,16 @@ st.markdown(
       .block-container { padding-top: 2.5rem; }
       div[data-testid="stMetricValue"] { font-size: 1.6rem; }
       .stDownloadButton button { width: 100%; height: 3.2rem; font-weight: 600; }
+      /* Matches the TikTok sync tool: yellow slab, black caption bar. */
       .mm-banner {
-        background: #1F3864; color: #FFFFFF; font-size: 1.9rem; font-weight: 700;
-        padding: 18px 26px; border-radius: 6px 6px 0 0; letter-spacing: -0.01em;
+        background: #FFE900; color: #000000; font-size: 2rem; font-weight: 800;
+        padding: 26px 30px; border-radius: 4px 4px 0 0; letter-spacing: -0.02em;
       }
       .mm-subbanner {
-        background: #12233F; color: #FFD966; font-size: 0.95rem;
-        padding: 11px 26px; border-radius: 0 0 6px 6px; margin-bottom: 18px;
+        background: #0D0D0D; color: #FFFFFF; font-size: 1rem;
+        padding: 14px 30px; border-radius: 0 0 4px 4px; margin-bottom: 20px;
       }
-      .mm-subbanner b { color: #FFFFFF; }
+      .mm-subbanner b { color: #FFE900; }
     </style>
     """,
     unsafe_allow_html=True,
