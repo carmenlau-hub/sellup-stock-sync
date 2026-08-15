@@ -165,8 +165,12 @@ LOCKED_HEADERS: tuple[str, ...] = (
     "ML Available Qty",
     "Target Stock",
     "# SKUs",
+    "How linked",
 )
 
+# The review sheet Carmen actually works in. Everything the reviewer needs to
+# judge a row is on one line: the POS side, the tool's best suggestions, and
+# the two cells she fills in.
 NEW_SKUS_HEADERS: tuple[str, ...] = (
     "#",
     "Masterlist Stock Type ID",
@@ -175,6 +179,21 @@ NEW_SKUS_HEADERS: tuple[str, ...] = (
     "Model",
     "Color",
     "Available Qty",
+    "Condition",
+    "Suggested SellUp SKU ID",
+    "Suggested SellUp Listing",
+    "Confidence",
+    "Score",
+    "Why",
+    "Alternative 2",
+    "Alternative 3",
+    "Link to SellUp SKU ID",
+    "Reviewer Decision",
+    "Notes",
+)
+
+# Columns the reviewer is expected to edit, highlighted in the workbook.
+NEW_SKUS_INPUT_COLUMNS: tuple[str, ...] = (
     "Link to SellUp SKU ID",
     "Reviewer Decision",
     "Notes",
@@ -195,16 +214,6 @@ MATCH_REVIEW_HEADERS: tuple[str, ...] = (
     "Notes",
 )
 
-# The complete SKU-to-POS link map, including links whose POS row happens to
-# be out of stock today. Locked Matches only shows what was synced this run,
-# so without this sheet a registry round-trip would silently lose history.
-LINK_HISTORY_HEADERS: tuple[str, ...] = (
-    "SellUp SKU ID",
-    "LOCKED Masterlist ID(s)",
-    "SellUp Model",
-    "Status",
-)
-
 UNSOLD_HEADERS: tuple[str, ...] = (
     "#",
     "Masterlist Stock Type ID",
@@ -213,6 +222,16 @@ UNSOLD_HEADERS: tuple[str, ...] = (
     "Model",
     "Color",
     "Available Qty",
+)
+
+# The complete SKU-to-POS link map, including links whose POS row happens to
+# be out of stock today. Locked Matches only shows what was synced this run,
+# so without this sheet a registry round-trip would silently lose history.
+LINK_HISTORY_HEADERS: tuple[str, ...] = (
+    "SellUp SKU ID",
+    "LOCKED Masterlist ID(s)",
+    "SellUp Model",
+    "Status",
 )
 
 REGISTRY_HEADERS: dict[str, tuple[str, ...]] = {
@@ -245,6 +264,23 @@ TERMINAL_DECISIONS: frozenset[str] = frozenset(
 )
 
 # --------------------------------------------------------------------------
+# Automatic linking
+# --------------------------------------------------------------------------
+# A suggestion at or above this score is applied without asking. The scoring
+# weights in matching.py mean 100 requires the manufacturer, the storage, the
+# colour and the model name all to agree -- the same bar the old "Accept all
+# high-confidence" button used.
+AUTO_LINK_MIN_SCORE = 100
+
+# Laptops, chargers and other hardware SellUp has no worksheet for are filed
+# under "Not Selling in SellUp" automatically.
+AUTO_CLASSIFY_UNSELLABLE = True
+
+LINKED_BY_SEED = "carried over"
+LINKED_BY_AUTO = "auto-linked"
+LINKED_BY_REVIEWER = "reviewed"
+
+# --------------------------------------------------------------------------
 # Output behaviour
 # --------------------------------------------------------------------------
 # SellUp skips a listing entirely when its Qty cell is blank, so unmatched
@@ -263,6 +299,7 @@ MAX_OVERSELL_BUFFER = 5
 COLOR_NAVY = "1F3864"        # index / decision headers, white bold text
 COLOR_ORANGE = "F4B183"      # platform-side (SellUp) columns
 COLOR_YELLOW = "FFD966"      # masterlist-side (POS) columns
+COLOR_GREEN = "C6E0B4"       # cells the reviewer fills in
 COLOR_WHITE = "FFFFFF"
 COLOR_BLACK = "000000"
 

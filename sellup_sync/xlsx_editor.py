@@ -30,7 +30,6 @@ from xml.etree import ElementTree
 
 _NS_MAIN = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
 _NS_REL = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
-_NS_PKG_REL = "http://schemas.openxmlformats.org/package/2006/relationships"
 
 # Matches a whole <c> element, self-closing or not. Cell XML never contains
 # newlines in files produced by Excel or by the SellUp portal.
@@ -104,11 +103,7 @@ def _sheet_part_map(archive: zipfile.ZipFile) -> dict[str, str]:
     return mapping
 
 
-def _rewrite_sheet(
-    xml: bytes,
-    values: dict[str, int],
-    report: EditReport,
-) -> bytes:
+def _rewrite_sheet(xml: bytes, values: dict[str, int], report: EditReport) -> bytes:
     """Replace the target cells inside one sheet's XML in a single pass."""
     seen: set[str] = set()
 
@@ -123,15 +118,16 @@ def _rewrite_sheet(
         style_attr = b' s="' + style.group(1) + b'"' if style else b""
         number = str(int(values[ref])).encode("ascii")
         report.cells_written += 1
-        # No t attribute means "number", which is exactly what a Qty cell is.
-        return b'<c r="' + ref.encode("ascii") + b'"' + style_attr + b"><v>" + number + b"</v></c>"
+        # No t attribute means "number", which is what a Qty cell is.
+        return (
+            b'<c r="' + ref.encode("ascii") + b'"' + style_attr
+            + b"><v>" + number + b"</v></c>"
+        )
 
     result = _CELL_RE.sub(replace, xml)
 
     missing = set(values) - seen
     if missing:
-        # Every SellUp Qty cell exists in the template, so a missing reference
-        # means the row index was computed wrongly -- worth failing loudly.
         report.cells_missing.extend(sorted(missing))
 
     return result
@@ -158,11 +154,8 @@ def write_cells(
                 f"Worksheet(s) not found in the workbook: {sorted(unknown)}"
             )
 
-        targets = {
-            part_map[sheet]: values for sheet, values in edits.items() if values
-        }
+        targets = {part_map[sheet]: values for sheet, values in edits.items() if values}
 
-        # ZIP_DEFLATED matches what Excel and openpyxl produce.
         with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as output:
             for item in archive.infolist():
                 data = archive.read(item.filename)
@@ -171,7 +164,6 @@ def write_cells(
                     report.parts_rewritten.append(item.filename)
                 else:
                     report.parts_copied += 1
-                # Preserve the original entry metadata (date, external attrs).
                 info = zipfile.ZipInfo(item.filename, date_time=item.date_time)
                 info.compress_type = item.compress_type
                 info.external_attr = item.external_attr
@@ -189,13 +181,10 @@ def write_cells(
 
 
 def compare_archives(original: bytes, produced: bytes) -> list[str]:
-    """Confirm that only the intended sheet parts differ between two files.
-
-    Every other zip entry must be byte-identical. This is a much stronger
-    guarantee than comparing cell values.
-    """
+    """Confirm that only the intended sheet parts differ between two files."""
     problems: list[str] = []
-    with zipfile.ZipFile(io.BytesIO(original)) as a, zipfile.ZipFile(io.BytesIO(produced)) as b:
+    with zipfile.ZipFile(io.BytesIO(original)) as a, \
+         zipfile.ZipFile(io.BytesIO(produced)) as b:
         names_a = [i.filename for i in a.infolist()]
         names_b = [i.filename for i in b.infolist()]
         if names_a != names_b:

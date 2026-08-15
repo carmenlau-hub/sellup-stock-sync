@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from . import config
 
@@ -31,7 +31,6 @@ def clean(value: object) -> str:
     if value is None:
         return ""
     text = str(value)
-    # Normalise unicode dashes / non-breaking spaces that creep in from exports.
     text = unicodedata.normalize("NFKC", text)
     text = text.replace("–", "-").replace("—", "-").replace("\xa0", " ")
     return _WHITESPACE_RE.sub(" ", text).strip()
@@ -43,11 +42,7 @@ def upper(value: object) -> str:
 
 
 def alnum_key(value: object) -> str:
-    """Aggressive key: upper-case, punctuation stripped, single-spaced.
-
-    ``"Galaxy S25 Ultra"`` and ``"GALAXY  S25-ULTRA"`` both become
-    ``"GALAXY S25 ULTRA"``.
-    """
+    """Aggressive key: upper-case, punctuation stripped, single-spaced."""
     text = upper(value)
     text = _NON_ALNUM_RE.sub(" ", text)
     return _WHITESPACE_RE.sub(" ", text).strip()
@@ -62,19 +57,12 @@ def squash(value: object) -> str:
 # Capacity / RAM / network parsing
 # --------------------------------------------------------------------------
 
-# POS writes storage first: "256GB/12", "1TB/16", or a bare "128GB".
 _POS_CAP_RAM_RE = re.compile(r"\b(\d+)\s*(GB|TB)\s*/\s*(\d+)\b")
 _BARE_CAP_RE = re.compile(r"\b(\d+)\s*(GB|TB)\b")
-
-# SellUp writes RAM first: "12/256GB", "16/1TB", or a bare "256GB".
 _SELLUP_RAM_CAP_RE = re.compile(r"\b(\d+)\s*/\s*(\d+)\s*(GB|TB)\b")
-
-# Watch case size, e.g. "40mm", "44MM".
 _CASE_SIZE_RE = re.compile(r"\b(\d{2})\s*MM\b")
 
 _NETWORK_TOKENS = ("5G", "4G", "LTE", "WIFI", "WI-FI", "BLUETOOTH", "GPS", "CELL")
-
-# Trailing POS model code such as "-S948B", "-A376B", "-F976".
 _MODEL_CODE_RE = re.compile(r"-[A-Z]{0,2}\d{2,4}[A-Z]?\b")
 
 
@@ -84,11 +72,7 @@ def to_gb(amount: int, unit: str) -> int:
 
 
 def normalise_network(token: str) -> str:
-    """Fold equivalent connectivity names onto one canonical token.
-
-    LTE and 4G are the same thing; on watches Bluetooth and Wi-Fi are the
-    non-cellular option, while GPS+Cellular and LTE are the cellular one.
-    """
+    """Fold equivalent connectivity names onto one canonical token."""
     t = upper(token).replace("-", "").replace(" ", "")
     if t in {"4G", "LTE"}:
         return "4G"
@@ -103,18 +87,17 @@ def normalise_network(token: str) -> str:
 class DeviceSpec:
     """Structured view of a device variant, comparable across both systems."""
 
-    base: str = ""            # model name with specs stripped out
+    base: str = ""
     storage_gb: int | None = None
     ram_gb: int | None = None
-    network: str = ""         # canonical connectivity token
+    network: str = ""
     case_size_mm: int | None = None
-    channel: str = ""         # PRIMARY | TELCO | ""
-    activation: str = ""      # NA | A | ""
+    channel: str = ""
+    activation: str = ""
     raw: str = ""
 
     @property
     def storage_label(self) -> str:
-        """Human-readable storage for display in the review table."""
         if self.storage_gb is None:
             return ""
         if self.storage_gb >= 1024 and self.storage_gb % 1024 == 0:
@@ -123,7 +106,6 @@ class DeviceSpec:
 
     @property
     def connectivity_label(self) -> str:
-        """Human-readable connectivity for display in the review table."""
         parts: list[str] = []
         if self.case_size_mm:
             parts.append(f"{self.case_size_mm}mm")
@@ -132,7 +114,6 @@ class DeviceSpec:
         return ", ".join(parts)
 
     def identity(self) -> tuple:
-        """The tuple that must be equal for two specs to be the same variant."""
         return (
             squash(self.base),
             self.storage_gb,
@@ -142,13 +123,7 @@ class DeviceSpec:
         )
 
     def loose_identity(self) -> tuple:
-        """Identity ignoring RAM -- SellUp often omits RAM where POS states it."""
-        return (
-            squash(self.base),
-            self.storage_gb,
-            self.network,
-            self.case_size_mm,
-        )
+        return (squash(self.base), self.storage_gb, self.network, self.case_size_mm)
 
 
 def _strip_us_charger(text: str) -> tuple[str, bool]:
@@ -163,11 +138,7 @@ def _strip_us_charger(text: str) -> tuple[str, bool]:
 
 
 def parse_pos_model(model: object) -> DeviceSpec:
-    """Decompose a POS model string into a :class:`DeviceSpec`.
-
-    ``"S25 ULTRA 256GB/12 5G-S948B PRIMARY"`` yields base ``"S25 ULTRA"``,
-    storage 256, RAM 12, network ``"5G"``, channel ``"PRIMARY"``.
-    """
+    """Decompose a POS model string into a :class:`DeviceSpec`."""
     raw = upper(model)
     work = raw
 
@@ -179,8 +150,7 @@ def parse_pos_model(model: object) -> DeviceSpec:
             work = re.sub(rf"\b{suffix}$", "", work).strip()
             break
 
-    # 2. Activation token -- must be tested AFTER the channel is removed so
-    #    "16 128GB NA PRIMARY" is handled, and before anything else eats it.
+    # 2. Activation token, tested after the channel is removed.
     activation = ""
     if re.search(r"\bNA$", work):
         activation = config.ACTIVATION_NOT_ACTIVATED
@@ -215,20 +185,16 @@ def parse_pos_model(model: object) -> DeviceSpec:
         case_size_mm = int(m.group(1))
         work = work[: m.start()] + " " + work[m.end():]
 
-    # 6b. Watch case / band description.
-    #     POS spells a watch out in full:
-    #       "SERIES 11 42MM GPS JET BLACK ALUMINIUM CASE BLACK SPORT BAND M/L"
-    #     while SellUp lists it as "Watch Series 11 Aluminium". Everything from
-    #     "CASE" onwards describes the strap and finish, so it is dropped --
-    #     but the material immediately preceding it (ALUMINIUM, TITANIUM) is
-    #     kept because SellUp uses it to distinguish models.
+    # 6b. Watch case / band description. Everything from "CASE" onwards
+    #     describes the strap and finish, so it is dropped -- but the material
+    #     immediately preceding it is kept, because SellUp uses it.
     case_pos = work.find(" CASE")
     if case_pos != -1:
         head = work[:case_pos].strip()
         material = ""
         for candidate in ("ALUMINIUM", "ALUMINUM", "TITANIUM", "STAINLESS STEEL", "CERAMIC"):
             if candidate in head:
-                material = "TITANIUM" if candidate == "TITANIUM" else candidate
+                material = candidate
                 head = head.replace(candidate, " ")
                 break
         work = f"{head} {material}".strip()
@@ -240,7 +206,6 @@ def parse_pos_model(model: object) -> DeviceSpec:
             network = normalise_network(token)
             work = re.sub(rf"\b{re.escape(token)}\b", " ", work)
             break
-    # A watch described as "CELL" is cellular regardless of the token order.
     if re.search(r"\bCELL\b", work):
         network = "CELLULAR"
         work = re.sub(r"\bCELL\b", " ", work)
@@ -262,11 +227,7 @@ def parse_pos_model(model: object) -> DeviceSpec:
 
 
 def parse_sellup_specs(model: object, specs: object) -> DeviceSpec:
-    """Decompose a SellUp ``Model`` + ``Specs`` pair into a :class:`DeviceSpec`.
-
-    Specs look like ``"12/256GB"``, ``"256GB, Wi-Fi + Cellular"`` or
-    ``"40mm, GPS"``. The model itself is left as the base.
-    """
+    """Decompose a SellUp ``Model`` + ``Specs`` pair into a :class:`DeviceSpec`."""
     raw_model = upper(model)
     raw_specs = upper(specs)
 
@@ -274,7 +235,6 @@ def parse_sellup_specs(model: object, specs: object) -> DeviceSpec:
     case_size_mm = None
     network = ""
 
-    # Specs is a comma-separated list; handle each fragment independently.
     for part in [p.strip() for p in raw_specs.split(",") if p.strip()]:
         m = _SELLUP_RAM_CAP_RE.search(part)
         if m:
@@ -288,24 +248,17 @@ def parse_sellup_specs(model: object, specs: object) -> DeviceSpec:
         m = _CASE_SIZE_RE.search(part)
         if m:
             case_size_mm = int(m.group(1))
-            # A watch fragment can be "40mm" alone; connectivity is separate.
             remainder = part[: m.start()] + part[m.end():]
             if remainder.strip():
                 network = network or normalise_network(remainder)
             continue
-        # Anything else in the specs list is connectivity.
         if "CELLULAR" in part:
             network = "CELLULAR"
         elif part:
             network = network or normalise_network(part)
 
-    # Strip a leading brand word that SellUp repeats in the model
-    # ("Apple iPhone 17 Pro" -> "IPHONE 17 PRO" is kept; brand is matched
-    # separately, so only exact duplication is a problem in practice).
-    base = alnum_key(raw_model)
-
     return DeviceSpec(
-        base=base,
+        base=alnum_key(raw_model),
         storage_gb=storage_gb,
         ram_gb=ram_gb,
         network=network,
@@ -318,8 +271,6 @@ def parse_sellup_specs(model: object, specs: object) -> DeviceSpec:
 # Colour normalisation
 # --------------------------------------------------------------------------
 
-# Marketplace colour names are frequently abbreviated. Expansions are applied
-# before comparison so "Awes.Lilac" reaches "AWESOME LILAC".
 _COLOUR_ABBREVIATIONS: dict[str, str] = {
     "AWES": "AWESOME",
     "TITAN": "TITANIUM",
@@ -338,7 +289,6 @@ _COLOUR_ABBREVIATIONS: dict[str, str] = {
     "SPC": "SPACE",
 }
 
-# Spelling variants that mean the same colour.
 _MODEL_SYNONYMS: tuple[tuple[str, str], ...] = (
     ("TYPE C", "USBC"),
     ("TYPE-C", "USBC"),
@@ -362,7 +312,6 @@ _COLOUR_SYNONYMS: dict[str, str] = {
     "OFFWHITE": "OFF WHITE",
 }
 
-# Filler words that add nothing to a colour comparison.
 _COLOUR_NOISE: frozenset[str] = frozenset({"COLOR", "COLOUR", "EDITION", "FINISH"})
 
 
@@ -378,7 +327,6 @@ def normalise_colour(value: object) -> str:
         word = _COLOUR_SYNONYMS.get(word, word)
         words.append(word)
     joined = " ".join(words)
-    # Apply multi-word synonyms after the word pass.
     for src, dst in _COLOUR_SYNONYMS.items():
         joined = joined.replace(src, dst)
     return _WHITESPACE_RE.sub(" ", joined).strip()
@@ -390,12 +338,7 @@ def colour_key(value: object) -> str:
 
 
 def colours_match(a: object, b: object) -> bool:
-    """True when two colour names refer to the same finish.
-
-    Falls back to a containment test so ``"TITANIUM BLACK"`` matches
-    ``"BLACK TITANIUM"`` only when one is a strict superset of the other's
-    word set -- never on a single shared word like ``"BLACK"``.
-    """
+    """True when two colour names refer to the same finish."""
     ka, kb = colour_key(a), colour_key(b)
     if not ka or not kb:
         return False
@@ -405,11 +348,10 @@ def colours_match(a: object, b: object) -> bool:
     wb = set(normalise_colour(b).split())
     if not wa or not wb:
         return False
-    # Same words in a different order.
     if wa == wb:
         return True
-    # One is a subset of the other AND the subset has more than one word,
-    # which avoids "BLACK" swallowing "TITANIUM BLACK".
+    # One is a strict subset of the other, and has more than one word, which
+    # avoids "BLACK" swallowing "TITANIUM BLACK".
     if wa < wb or wb < wa:
         return min(len(wa), len(wb)) > 1
     return False
@@ -419,9 +361,6 @@ def colours_match(a: object, b: object) -> bool:
 # Brand normalisation
 # --------------------------------------------------------------------------
 
-# POS brands are granular (SAMSUNG WATCH, HONOR TABLET, IPHONE, IPAD) whereas
-# SellUp uses a single manufacturer name per row. Mapping both onto a common
-# manufacturer lets the matcher compare like with like.
 _POS_BRAND_TO_MAKER: dict[str, str] = {
     "IPHONE": "APPLE",
     "IPAD": "APPLE",
@@ -458,16 +397,7 @@ def maker(brand: object) -> str:
 # Model-family hints
 # --------------------------------------------------------------------------
 
-# POS drops the manufacturer's marketing family from the model ("S25 ULTRA"),
-# while SellUp keeps it ("Galaxy S25 Ultra"). These prefixes are stripped from
-# the SellUp side so the two bases line up.
-_FAMILY_PREFIXES: tuple[str, ...] = (
-    "GALAXY",
-    "APPLE",
-    "REDMI",
-    "POCO",
-    "WATCH",
-)
+_FAMILY_PREFIXES: tuple[str, ...] = ("GALAXY", "APPLE", "REDMI", "POCO", "WATCH")
 
 
 def strip_family_prefix(base: str) -> str:
@@ -482,9 +412,6 @@ def strip_family_prefix(base: str) -> str:
 # Device kind
 # --------------------------------------------------------------------------
 
-# SellUp only sells four kinds of hardware, one per worksheet. Classifying the
-# POS side the same way stops a MacBook being suggested as an iPad purely
-# because they share a storage size and a colour name.
 KIND_PHONE = "phone"
 KIND_TABLET = "tablet"
 KIND_WATCH = "watch"
@@ -500,7 +427,6 @@ SHEET_TO_KIND: dict[str, str] = {
     "Audio": KIND_AUDIO,
 }
 
-# Kinds SellUp has no worksheet for.
 UNSELLABLE_KINDS: frozenset[str] = frozenset({KIND_COMPUTER, KIND_ACCESSORY})
 
 _AUDIO_WORDS = (
@@ -525,34 +451,24 @@ def _contains_any(text: str, words: tuple[str, ...]) -> bool:
 
 
 def device_kind(brand: object, model: object) -> str:
-    """Classify a POS row into one of the SellUp device kinds.
-
-    Brand is checked first because POS encodes the kind there for watches and
-    tablets (``SAMSUNG WATCH``, ``HONOR TABLET``, ``IPAD``); the model string
-    disambiguates the rest.
-    """
+    """Classify a POS row into one of the SellUp device kinds."""
     b = upper(brand)
     m = upper(model)
-    # "ONE PLUS 15 512GB/16 5G W US 80W CHARGER" is a phone sold with a charger
-    # in the box, not a charger. Strip the bundle phrase before classifying.
+    # A phone bundled with a US charger is a phone, not a charger.
     for phrase in config.US_CHARGER_PHRASES:
         m = m.replace(phrase, " ")
     combined = f"{b} {m}"
 
-    # Computers are ruled out first: no SellUp worksheet sells them.
     if _contains_any(combined, _COMPUTER_WORDS):
         return KIND_COMPUTER
 
-    # Watches are tested before accessories. A POS watch model reads
-    # "SERIES 11 42MM GPS JET BLACK ALUMINIUM CASE BLACK SPORT BAND M/L" --
-    # the words "CASE" and "BAND" describe the watch itself, not a strap
-    # being sold separately, so the brand is the reliable signal.
+    # Watches before accessories: a POS watch model contains "CASE" and "BAND"
+    # describing the watch itself, so the brand is the reliable signal.
     if b.endswith("WATCH") or _contains_any(combined, _WATCH_WORDS):
         return KIND_WATCH
 
     if _contains_any(combined, _ACCESSORY_WORDS):
         return KIND_ACCESSORY
-
     if _contains_any(combined, _AUDIO_WORDS):
         return KIND_AUDIO
     if b in {"IPAD"} or b.endswith("TABLET") or _contains_any(combined, _TABLET_WORDS):
@@ -560,5 +476,4 @@ def device_kind(brand: object, model: object) -> str:
     if b in {"IPHONE"}:
         return KIND_PHONE
 
-    # A bare handset brand with a capacity is almost always a phone.
     return KIND_PHONE

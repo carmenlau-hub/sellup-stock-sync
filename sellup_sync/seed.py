@@ -1,7 +1,7 @@
 """Loader for the historical ``SellUp Stock Data.xlsx`` mapping sheet.
 
-This is the record of links Carmen has already confirmed by hand. It is a flat
-three-column sheet:
+This is the record of links confirmed by hand before the tool existed. It is a
+flat three-column sheet:
 
     POS Stock Type ID | SellUp Variation ID | SellUp Variation Name
 
@@ -45,11 +45,8 @@ class SeedParseError(Exception):
 class SeedMapping:
     """Confirmed POS-to-SellUp links carried over from previous runs."""
 
-    # SellUp SKU ID -> ordered list of POS Stock Type IDs feeding it.
     links: dict[str, list[str]] = field(default_factory=dict)
-    # SellUp SKU IDs explicitly reviewed and found to have no POS source.
     not_in_pos: set[str] = field(default_factory=set)
-    # Display names captured from the sheet, for nicer review tables.
     names: dict[str, str] = field(default_factory=dict)
 
     rows_read: int = 0
@@ -133,7 +130,6 @@ def load_seed_mapping(source: str | IO[bytes]) -> SeedMapping:
                 mapping.placeholder_rows += 1
                 continue
 
-            # The sheet contains repeated pairs; keep each link once.
             if (sku, pos_id) in seen:
                 continue
             seen.add((sku, pos_id))

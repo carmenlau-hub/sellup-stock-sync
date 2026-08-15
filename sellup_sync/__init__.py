@@ -7,7 +7,7 @@ SellUp file touching only columns G, I and K.
 
 from __future__ import annotations
 
-__version__ = "1.0.0"
+__version__ = "2.0.0"
 
 from . import config, inventory, matching, normalize, pipeline, pos, registry, seed
 

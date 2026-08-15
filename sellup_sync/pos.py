@@ -7,10 +7,9 @@ Hard rules enforced here:
   columns are never summed.
 * **TELCO rows are dropped.** SellUp has no telco listings and the PRIMARY /
   TELCO pools are never combined.
-* **Export sets and freebies are dropped.** Parallel-import region sets and
-  giveaway units are not sellable stock.
+* **Export sets and freebies are dropped.**
 * **Apple and Used rows are kept.** Unlike Shopee or Lazada, SellUp trades in
-  Apple hardware and in used devices, so neither is excluded.
+  Apple hardware and in used devices.
 """
 
 from __future__ import annotations
@@ -22,16 +21,7 @@ from typing import IO
 import openpyxl
 
 from . import config
-from .normalize import (
-    DeviceSpec,
-    alnum_key,
-    clean,
-    colour_key,
-    maker,
-    normalise_colour,
-    parse_pos_model,
-    upper,
-)
+from .normalize import DeviceSpec, clean, colour_key, maker, parse_pos_model, upper
 
 
 class PosParseError(Exception):
@@ -44,9 +34,9 @@ class PosRow:
 
     stock_type_id: str
     category: str            # 'New' | 'Used'
-    brand: str               # raw POS brand, e.g. 'SAMSUNG WATCH'
-    model: str               # raw POS model string
-    colour: str              # raw POS colour
+    brand: str
+    model: str
+    colour: str
     available_qty: int       # Column F, verbatim
     spec: DeviceSpec
     excel_row: int
@@ -76,15 +66,12 @@ class PosRow:
 
     @property
     def label(self) -> str:
-        """``'34073:ONE PLUS 13S 512GB/12 5G|BLACK VELVET'`` style label."""
         return f"{self.stock_type_id}:{self.model}|{self.colour}"
 
     def match_key(self) -> tuple:
-        """Strict key used for automatic matching against a SellUp row."""
         return (self.maker, *self.spec.identity(), colour_key(self.colour), self.slot)
 
     def loose_key(self) -> tuple:
-        """RAM-agnostic key, used as a second matching pass."""
         return (self.maker, *self.spec.loose_identity(), colour_key(self.colour), self.slot)
 
 
@@ -217,7 +204,6 @@ def load_pos_masterlist(source: str | IO[bytes]) -> PosMasterlist:
             colour = clean(cells[config.POS_COL_COLOR - 1])
             raw_qty = cells[config.POS_COL_AVAILABLE_QTY - 1]
 
-            # Blank spacer rows at the end of the export.
             if not stock_type_id and not model:
                 continue
 

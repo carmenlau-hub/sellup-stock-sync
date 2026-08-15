@@ -1,11 +1,15 @@
-"""Orchestration: turn the four uploads into locked matches, review queues and
-the quantity assignments that get written into the SellUp template.
+"""Orchestration: turn the uploads into locked matches, a review sheet and the
+quantity assignments that get written into the SellUp template.
 
 The pipeline is a pure function of its inputs plus the reviewer decisions held
-in session state. Re-running it after a decision changes is cheap and always
+in the registry. Re-running it after a decision changes is cheap and always
 produces a consistent picture, which is what keeps deduplication honest: a SKU
 marked ``Linked`` becomes part of the locked map on the very next run and can
 never resurface in the New Masterlist SKUs queue.
+
+Confident suggestions are applied automatically so the first run produces a
+usable file straight away. Everything auto-linked is labelled as such in the
+``How linked`` column of Locked Matches, so it can be audited or overridden.
 """
 
 from __future__ import annotations
@@ -15,6 +19,7 @@ from dataclasses import dataclass, field
 
 from . import config
 from .inventory import QuantityAssignment, SellUpInventory, SellUpRow
+from .normalize import UNSELLABLE_KINDS, device_kind
 from .pos import PosMasterlist, PosRow
 from .seed import SeedMapping
 
@@ -27,6 +32,7 @@ class LockedMatch:
     slot: str
     pos_rows: list[PosRow]
     target_stock: int
+    origin: str = config.LINKED_BY_SEED
 
     @property
     def masterlist_ids(self) -> str:
@@ -78,7 +84,7 @@ class ValidationIssue:
 
 @dataclass
 class PipelineResult:
-    """Everything the UI needs to render a run."""
+    """Everything the UI and the registry writer need for a run."""
 
     locked: list[LockedMatch] = field(default_factory=list)
     new_skus: list[NewMasterlistSku] = field(default_factory=list)
@@ -90,6 +96,8 @@ class PipelineResult:
     stale_pos_ids: set[str] = field(default_factory=set)
     unknown_sellup_skus: set[str] = field(default_factory=set)
     delisted_count: int = 0
+    auto_linked_count: int = 0
+    auto_classified_count: int = 0
     # The complete SKU -> POS ID map, including links with no live POS row.
     # Locked Matches only covers what was synced today, so this is what makes
     # the exported registry a lossless record of the matching history.
@@ -110,12 +118,18 @@ class PipelineResult:
 
     @property
     def export_ready(self) -> bool:
-        """The download guardrail: no errors, and every new SKU dealt with."""
-        return not self.errors and self.unreviewed_count == 0
+        """Whether the downloads can be produced.
+
+        Outstanding review rows no longer block the export. They are carried
+        in the registry instead, so the reviewing happens in Excel rather than
+        in the browser. Only a hard validation error stops a run.
+        """
+        return not self.errors
 
     def metrics(self) -> dict[str, int]:
         return {
             "locked_updated": len(self.locked),
+            "auto_linked": self.auto_linked_count,
             "new_skus_detected": len(self.new_skus),
             "requiring_review": self.unreviewed_count,
             "not_selling": len(self.not_selling),
@@ -139,6 +153,7 @@ def build_locked_matches(
     inventory: SellUpInventory,
     links: dict[str, list[str]],
     buffer: int = 0,
+    origins: dict[str, str] | None = None,
 ) -> tuple[list[LockedMatch], set[str], set[str], list[ValidationIssue]]:
     """Compute target stock for every confirmed SellUp link.
 
@@ -148,6 +163,7 @@ def build_locked_matches(
     """
     pos_by_id = pos.by_id()
     sellup_by_sku = inventory.by_sku()
+    origins = origins or {}
 
     locked: list[LockedMatch] = []
     stale_pos_ids: set[str] = set()
@@ -171,12 +187,18 @@ def build_locked_matches(
 
         for slot, rows in by_slot.items():
             raw_total = sum(r.available_qty for r in rows)
+            origin = config.LINKED_BY_SEED
+            for row in rows:
+                if origins.get(row.stock_type_id):
+                    origin = origins[row.stock_type_id]
+                    break
             locked.append(
                 LockedMatch(
                     sellup=sellup_row,
                     slot=slot,
                     pos_rows=sorted(rows, key=lambda r: r.stock_type_id),
                     target_stock=apply_buffer(raw_total, buffer),
+                    origin=origin,
                 )
             )
 
@@ -215,11 +237,7 @@ def detect_new_masterlist_skus(
     Matches, Not Selling in SellUp, or Not on SellUp Yet.
     """
     accounted = linked_pos_ids | classified_pos_ids
-    return [
-        row
-        for row in pos.with_stock()
-        if row.stock_type_id not in accounted
-    ]
+    return [row for row in pos.with_stock() if row.stock_type_id not in accounted]
 
 
 def build_assignments(
@@ -267,7 +285,7 @@ def zero_out_sold_slots(
 ) -> tuple[list[QuantityAssignment], int]:
     """Delist confirmed listings whose POS source has run dry.
 
-    A SKU that Carmen has already linked, but which receives no quantity this
+    A SKU that has already been linked, but which receives no quantity this
     run -- because its POS row sold out and dropped off the report, or because
     that condition has no stock left -- would otherwise keep its old quantity
     on SellUp and oversell. Those cells are explicitly set to 0.
@@ -330,6 +348,43 @@ def detect_assignment_clashes(locked: list[LockedMatch]) -> list[ValidationIssue
     ]
 
 
+def auto_resolve(
+    orphans: list[PosRow],
+    suggestion_index,
+    min_score: int = config.AUTO_LINK_MIN_SCORE,
+    classify_unsellable: bool = config.AUTO_CLASSIFY_UNSELLABLE,
+) -> tuple[dict[str, str], dict[str, str], dict[str, list]]:
+    """Decide the easy rows without asking.
+
+    Returns ``(links, classifications, suggestions)`` where ``links`` maps a
+    POS ID to the SellUp SKU it should feed, ``classifications`` maps a POS ID
+    to ``Not Selling in SellUp``, and ``suggestions`` carries the ranked
+    candidates for every orphan so the review sheet can show them.
+
+    Only suggestions scoring at or above ``min_score`` are taken. That bar
+    requires manufacturer, storage, colour and model name to all agree.
+    """
+    links: dict[str, str] = {}
+    classifications: dict[str, str] = {}
+    suggestions: dict[str, list] = {}
+
+    for pos_row in orphans:
+        pos_id = pos_row.stock_type_id
+
+        # Hardware SellUp has no worksheet for never needs a human look.
+        if classify_unsellable and device_kind(pos_row.brand, pos_row.model) in UNSELLABLE_KINDS:
+            classifications[pos_id] = config.DECISION_NOT_SELLING
+            suggestions[pos_id] = []
+            continue
+
+        ranked = suggestion_index.suggest(pos_row) if suggestion_index else []
+        suggestions[pos_id] = ranked
+        if ranked and ranked[0].score >= min_score:
+            links[pos_id] = ranked[0].sellup.sku_id
+
+    return links, classifications, suggestions
+
+
 def run_pipeline(
     pos: PosMasterlist,
     inventory: SellUpInventory,
@@ -337,13 +392,15 @@ def run_pipeline(
     decisions: dict[str, dict] | None = None,
     buffer: int = 0,
     suggestion_index=None,
+    auto_link: bool = True,
+    auto_link_min_score: int = config.AUTO_LINK_MIN_SCORE,
+    auto_classify: bool = config.AUTO_CLASSIFY_UNSELLABLE,
 ) -> PipelineResult:
     """Execute a full sync pass.
 
-    ``decisions`` is the session-state map of POS Stock Type ID to
-    ``{"decision": str, "linked_sku_id": str, "notes": str}``. Decisions taken
-    in the UI are folded into the link map before anything else runs, so a SKU
-    linked a moment ago is already locked on this pass.
+    ``decisions`` maps a POS Stock Type ID to
+    ``{"decision": str, "linked_sku_id": str, "notes": str}`` and comes from
+    the uploaded registry. A reviewer decision always beats an automatic one.
     """
     result = PipelineResult()
     decisions = decisions or {}
@@ -352,8 +409,9 @@ def run_pipeline(
     links: dict[str, list[str]] = {
         sku: list(ids) for sku, ids in (seed.links.items() if seed else ())
     }
+    origins: dict[str, str] = {}
 
-    # 2. Fold in this session's decisions. This is the deduplication step.
+    # 2. Fold in the reviewer's decisions. This is the deduplication step.
     classified_pos_ids: set[str] = set()
     classified: dict[str, str] = {}
 
@@ -365,41 +423,71 @@ def run_pipeline(
                 bucket = links.setdefault(sku_id, [])
                 if pos_id not in bucket:
                     bucket.append(pos_id)
+                origins[pos_id] = config.LINKED_BY_REVIEWER
         elif decision in (config.DECISION_NOT_SELLING, config.DECISION_NOT_YET):
             classified_pos_ids.add(pos_id)
             classified[pos_id] = decision
+
+    # 3. Anything with stock and no home is a candidate for automatic
+    #    resolution, then whatever is left becomes the review sheet.
+    linked_pos_ids = {pid for ids in links.values() for pid in ids}
+    orphans = detect_new_masterlist_skus(pos, linked_pos_ids, classified_pos_ids)
+
+    auto_links, auto_classified, suggestions = (
+        auto_resolve(orphans, suggestion_index, auto_link_min_score, auto_classify)
+        if auto_link or auto_classify
+        else ({}, {}, {pid.stock_type_id: [] for pid in orphans})
+    )
+
+    if auto_link:
+        for pos_id, sku_id in auto_links.items():
+            bucket = links.setdefault(sku_id, [])
+            if pos_id not in bucket:
+                bucket.append(pos_id)
+            origins[pos_id] = config.LINKED_BY_AUTO
+        result.auto_linked_count = len(auto_links)
+    else:
+        auto_links = {}
+
+    if auto_classify:
+        for pos_id, decision in auto_classified.items():
+            classified_pos_ids.add(pos_id)
+            classified[pos_id] = decision
+        result.auto_classified_count = len(auto_classified)
+    else:
+        auto_classified = {}
 
     # Preserve the complete map before anything filters it down.
     result.all_links = {sku: list(ids) for sku, ids in links.items()}
     result.no_pos_source = set(getattr(seed, "not_in_pos", set()) or set())
 
-    # 3. Compute target stock for every link.
-    locked, stale, unknown, issues = build_locked_matches(pos, inventory, links, buffer)
+    # 4. Compute target stock for every link.
+    locked, stale, unknown, issues = build_locked_matches(
+        pos, inventory, links, buffer, origins
+    )
     result.locked = locked
     result.stale_pos_ids = stale
     result.unknown_sellup_skus = unknown
     result.issues.extend(issues)
     result.issues.extend(detect_assignment_clashes(locked))
 
-    # 4. Anything with stock and no home becomes a review item.
+    # 5. Whatever is still unaccounted for goes on the review sheet.
     linked_pos_ids = {pid for ids in links.values() for pid in ids}
-    orphans = detect_new_masterlist_skus(pos, linked_pos_ids, classified_pos_ids)
+    remaining = detect_new_masterlist_skus(pos, linked_pos_ids, classified_pos_ids)
 
-    for pos_row in orphans:
+    for pos_row in remaining:
         entry = decisions.get(pos_row.stock_type_id, {})
         result.new_skus.append(
             NewMasterlistSku(
                 pos=pos_row,
-                suggestions=(
-                    suggestion_index.suggest(pos_row) if suggestion_index else []
-                ),
+                suggestions=suggestions.get(pos_row.stock_type_id, []),
                 decision=entry.get("decision", config.DECISION_UNREVIEWED),
                 linked_sku_id=entry.get("linked_sku_id", ""),
                 notes=entry.get("notes", ""),
             )
         )
 
-    # 5. Route classified POS rows to their tabs.
+    # 6. Route classified POS rows to their tabs.
     pos_by_id = pos.by_id()
     for pos_id, decision in classified.items():
         pos_row = pos_by_id.get(pos_id)
@@ -410,20 +498,39 @@ def run_pipeline(
         else:
             result.not_yet.append(pos_row)
 
-    # 6. SellUp listings previously reviewed as having no POS source.
+    # 7. SellUp listings previously reviewed as having no POS source.
     if seed:
         sellup_by_sku = inventory.by_sku()
         result.match_review = [
-            sellup_by_sku[sku] for sku in sorted(seed.not_in_pos) if sku in sellup_by_sku
+            sellup_by_sku[sku] for sku in sorted(result.no_pos_source) if sku in sellup_by_sku
         ]
 
-    # 7. Cell writes, plus delisting for confirmed links that ran dry.
+    # 8. Cell writes, plus delisting for confirmed links that ran dry.
     result.assignments = build_assignments(locked, buffer)
     delistings, delisted_count = zero_out_sold_slots(locked, inventory, links)
     result.assignments.extend(delistings)
     result.assignments.sort(key=lambda a: (a.sheet, a.excel_row, a.column))
     result.delisted_count = delisted_count
 
+    if result.auto_linked_count:
+        result.issues.append(
+            ValidationIssue(
+                "info",
+                f"{result.auto_linked_count} SKU(s) were linked automatically on a "
+                f"score of {auto_link_min_score} or above. They are marked "
+                f"'{config.LINKED_BY_AUTO}' in the Locked Matches sheet — worth a "
+                "spot-check before uploading.",
+            )
+        )
+    if result.auto_classified_count:
+        result.issues.append(
+            ValidationIssue(
+                "info",
+                f"{result.auto_classified_count} row(s) were filed under 'Not "
+                "Selling in SellUp' automatically because SellUp has no worksheet "
+                "for that kind of hardware (laptops, chargers, styluses).",
+            )
+        )
     if delisted_count:
         result.issues.append(
             ValidationIssue(
@@ -437,8 +544,8 @@ def run_pipeline(
         result.issues.append(
             ValidationIssue(
                 "error",
-                "No quantities would be written. Check that the seed mapping and "
-                "the uploaded inventory refer to the same SellUp SKU IDs.",
+                "No quantities would be written. Check that the registry and the "
+                "uploaded inventory refer to the same SellUp SKU IDs.",
             )
         )
 

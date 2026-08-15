@@ -1,9 +1,9 @@
 """Reader and writer for the SellUp bulk inventory template.
 
-The writing half of this module is deliberately paranoid. The generated file
-has to be uploadable to SellUp untouched, so the writer:
+The writing half is deliberately paranoid. The generated file has to be
+uploadable to SellUp untouched, so the writer:
 
-* re-opens the **original uploaded bytes** rather than rebuilding a workbook,
+* edits the original uploaded bytes at the XML level rather than re-saving,
 * only ever assigns to columns G, I and K on data rows,
 * refuses to touch a cell in any other column via :func:`_assert_writable`,
 * leaves prices, formulas, styling, merged cells and sheet order alone.
@@ -73,14 +73,12 @@ class SellUpRow:
         return " ; ".join(p for p in parts if p)
 
     def match_key(self) -> tuple:
-        """Strict key, mirroring :meth:`pos.PosRow.match_key` minus the slot."""
         return (self.maker, *self.spec.identity(), colour_key(self.colour))
 
     def loose_key(self) -> tuple:
         return (self.maker, *self.spec.loose_identity(), colour_key(self.colour))
 
     def family_key(self) -> tuple:
-        """Key with the marketing family prefix removed from the model base."""
         base = strip_family_prefix(self.spec.base).replace(" ", "")
         return (
             self.maker,
@@ -118,9 +116,7 @@ class SellUpInventory:
     def _row_index(self) -> dict[tuple[str, int], SellUpRow]:
         if not hasattr(self, "_index_cache"):
             object.__setattr__(
-                self,
-                "_index_cache",
-                {(r.sheet, r.excel_row): r for r in self.rows},
+                self, "_index_cache", {(r.sheet, r.excel_row): r for r in self.rows}
             )
         return self._index_cache  # type: ignore[attr-defined]
 
@@ -199,21 +195,19 @@ def load_inventory(source: str | IO[bytes] | bytes) -> SellUpInventory:
                 sku_id = clean(worksheet.cell(excel_row, config.COL_SKU_ID).value)
                 if not sku_id:
                     continue
-                brand = clean(worksheet.cell(excel_row, config.COL_BRAND).value)
-                model = clean(worksheet.cell(excel_row, config.COL_MODEL).value)
-                specs = clean(worksheet.cell(excel_row, config.COL_SPECS).value)
-                colour = clean(worksheet.cell(excel_row, config.COL_COLOR).value)
-
                 rows.append(
                     SellUpRow(
                         sheet=sheet_name,
                         excel_row=excel_row,
                         sku_id=sku_id,
-                        brand=brand,
-                        model=model,
-                        specs=specs,
-                        colour=colour,
-                        spec=parse_sellup_specs(model, specs),
+                        brand=clean(worksheet.cell(excel_row, config.COL_BRAND).value),
+                        model=clean(worksheet.cell(excel_row, config.COL_MODEL).value),
+                        specs=clean(worksheet.cell(excel_row, config.COL_SPECS).value),
+                        colour=clean(worksheet.cell(excel_row, config.COL_COLOR).value),
+                        spec=parse_sellup_specs(
+                            worksheet.cell(excel_row, config.COL_MODEL).value,
+                            worksheet.cell(excel_row, config.COL_SPECS).value,
+                        ),
                         current_qty={
                             slot: worksheet.cell(excel_row, col).value
                             for slot, col in config.SLOT_TO_COLUMN.items()
@@ -222,9 +216,7 @@ def load_inventory(source: str | IO[bytes] | bytes) -> SellUpInventory:
                 )
 
         return SellUpInventory(
-            rows=rows,
-            sheet_names=list(workbook.sheetnames),
-            source_bytes=raw,
+            rows=rows, sheet_names=list(workbook.sheetnames), source_bytes=raw
         )
     finally:
         workbook.close()
@@ -268,6 +260,13 @@ class WriteReport:
     per_sheet: dict[str, int] = field(default_factory=dict)
 
 
+def _as_int(value: object) -> int | None:
+    try:
+        return int(float(str(value).strip()))
+    except (TypeError, ValueError):
+        return None
+
+
 def write_quantities(
     inventory: SellUpInventory,
     assignments: list[QuantityAssignment],
@@ -276,11 +275,7 @@ def write_quantities(
 
     Editing is done at the XML level rather than by re-saving the workbook,
     because an openpyxl round-trip silently converts every empty-string cell
-    to a truly empty one -- around 28,000 cells in this template. See
-    :mod:`sellup_sync.xlsx_editor`.
-
-    Returns the new file bytes and a report of what changed. Every cell outside
-    columns G, I and K is left byte-identical.
+    to a truly empty one -- around 28,000 cells in this template.
     """
     report = WriteReport()
     edits: dict[str, dict[str, int]] = {}
@@ -295,8 +290,6 @@ def write_quantities(
                 f"at row {config.SELLUP_FIRST_DATA_ROW}."
             )
 
-        # Skip cells that already hold the right number so the diff stays
-        # minimal and re-running the tool is a no-op.
         current = inventory.cell_value(assignment.sheet, assignment.excel_row, column)
         if current is not None and _as_int(current) == int(assignment.quantity):
             report.cells_unchanged += 1
@@ -313,13 +306,6 @@ def write_quantities(
     return produced, report
 
 
-def _as_int(value: object) -> int | None:
-    try:
-        return int(float(str(value).strip()))
-    except (TypeError, ValueError):
-        return None
-
-
 def diff_against_source(original: bytes, produced: bytes) -> list[str]:
     """Verify that only columns G, I and K differ between two workbooks.
 
@@ -328,23 +314,17 @@ def diff_against_source(original: bytes, produced: bytes) -> list[str]:
     1. every zip part other than the edited worksheets must be byte-identical
     2. within the edited worksheets, every differing cell must sit in column
        G, I or K on a data row
-
-    Returns a list of violations; an empty list means the template is intact.
     """
     violations: list[str] = []
 
-    # Check 1 -- non-sheet parts must be untouched.
-    changed_parts = compare_archives(original, produced)
-    for part in changed_parts:
+    for part in compare_archives(original, produced):
         if not part.startswith("xl/worksheets/"):
             violations.append(
                 f"Zip entry '{part}' was modified. Only worksheet parts may change."
             )
 
-    # Check 2 -- cell-level comparison of the whole workbook.
     wb_a = openpyxl.load_workbook(io.BytesIO(original))
     wb_b = openpyxl.load_workbook(io.BytesIO(produced))
-
     try:
         if wb_a.sheetnames != wb_b.sheetnames:
             violations.append(
@@ -357,8 +337,7 @@ def diff_against_source(original: bytes, produced: bytes) -> list[str]:
             if ws_a.max_row != ws_b.max_row or ws_a.max_column != ws_b.max_column:
                 violations.append(
                     f"'{sheet_name}' dimensions changed: "
-                    f"{ws_a.max_row}x{ws_a.max_column} -> "
-                    f"{ws_b.max_row}x{ws_b.max_column}"
+                    f"{ws_a.max_row}x{ws_a.max_column} -> {ws_b.max_row}x{ws_b.max_column}"
                 )
                 continue
 
