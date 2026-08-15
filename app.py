@@ -1,7 +1,8 @@
 """SellUp Stock Bulk Update — Streamlit front end.
 
-Mirrors the layout of the existing Shopee stock sync tool: uploads in the
-sidebar, a metrics dashboard across the top, then tabs for the registry.
+Laid out like the TikTok and Shopee sync tools: a banner header, numbered
+upload sections in the sidebar, a metrics dashboard, then tabs for the
+registry.
 
 Run locally:      streamlit run app.py
 Deployed on:      Streamlit Community Cloud
@@ -34,7 +35,7 @@ from sellup_sync.registry import (
 from sellup_sync.seed import SeedParseError, load_seed_mapping, summarise_seed
 
 st.set_page_config(
-    page_title="SellUp Stock Bulk Update",
+    page_title="SellUp Stock Sync Tool",
     page_icon="📦",
     layout="wide",
 )
@@ -45,16 +46,28 @@ st.set_page_config(
 st.markdown(
     """
     <style>
-      .block-container { padding-top: 2rem; }
+      .block-container { padding-top: 2.5rem; }
       div[data-testid="stMetricValue"] { font-size: 1.6rem; }
       .stDownloadButton button { width: 100%; }
-      .pill {
-        display:inline-block; padding:2px 10px; border-radius:10px;
-        font-size:0.75rem; font-weight:600; margin-right:6px;
+
+      .mm-banner {
+        background: #1F3864;
+        color: #FFFFFF;
+        font-size: 1.9rem;
+        font-weight: 700;
+        padding: 18px 26px;
+        border-radius: 6px 6px 0 0;
+        letter-spacing: -0.01em;
       }
-      .pill-high { background:#d4edda; color:#155724; }
-      .pill-med  { background:#fff3cd; color:#856404; }
-      .pill-low  { background:#f8d7da; color:#721c24; }
+      .mm-subbanner {
+        background: #12233F;
+        color: #FFD966;
+        font-size: 0.95rem;
+        padding: 11px 26px;
+        border-radius: 0 0 6px 6px;
+        margin-bottom: 18px;
+      }
+      .mm-subbanner b { color: #FFFFFF; }
     </style>
     """,
     unsafe_allow_html=True,
@@ -115,36 +128,43 @@ def _load_registry(raw: bytes):
 # --------------------------------------------------------------------------
 # Sidebar — uploads
 # --------------------------------------------------------------------------
-st.sidebar.title("📦 SellUp Stock Sync")
-st.sidebar.caption("Mister Mobile · bulk stock update")
+st.sidebar.header("1 · Upload files")
 
-st.sidebar.subheader("1. Required files")
 pos_file = st.sidebar.file_uploader(
-    "POS Masterlist", type=["xlsx", "xlsm", "csv"],
+    "POS Masterlist (stock report)",
+    type=["xlsx", "xlsm", "csv"],
     help="stock_report_DD-MM-YYYY.xlsx exported from POS.",
 )
 inventory_file = st.sidebar.file_uploader(
-    "SellUp Bulk Inventory Template", type=["xlsx"],
+    "SellUp Bulk Inventory Template",
+    type=["xlsx"],
     help="INVENTORIES_*.xlsx downloaded from the SellUp dealer portal.",
 )
-
-st.sidebar.subheader("2. Link history")
-seed_file = st.sidebar.file_uploader(
-    "SellUp Stock Data (previous matches)", type=["xlsx"],
-    help="Three-column sheet: POS Stock Type ID | SellUp Variation ID | Name.",
-)
 registry_file = st.sidebar.file_uploader(
-    "SellUp SKU Registry (optional)", type=["xlsx"],
-    help="A registry exported by this tool on a previous run.",
+    "SellUp SKU Registry",
+    type=["xlsx"],
+    help="SellUp_Match_Review_*.xlsx — the file this tool gives you at the end "
+         "of every run. Leave this empty on your first run.",
 )
 
-st.sidebar.subheader("3. Settings")
+with st.sidebar.expander("Optional: seed mapping file"):
+    st.caption(
+        "Only needed on your first run, before you have a SKU Registry. "
+        "This is your `SellUp Stock Data` sheet with the columns "
+        "`POS Stock Type ID | SellUp Variation ID | SellUp Variation Name`."
+    )
+    seed_file = st.file_uploader(
+        "SellUp Stock Data", type=["xlsx"], label_visibility="collapsed"
+    )
+
+st.sidebar.header("2 · Settings")
 st.session_state["buffer"] = st.sidebar.slider(
     "Anti-oversell buffer",
-    0, config.MAX_OVERSELL_BUFFER, st.session_state["buffer"],
-    help="Quantities at or below this number are written as 0. "
-         "Thinly-spread single units are the most common oversell cause. "
-         "0 disables the buffer.",
+    0,
+    config.MAX_OVERSELL_BUFFER,
+    st.session_state["buffer"],
+    help="Quantities at or below this number are written as 0. Thinly-spread "
+         "single units are the most common cause of overselling. 0 disables it.",
 )
 
 if st.sidebar.button("Reset all decisions", use_container_width=True):
@@ -159,18 +179,42 @@ st.sidebar.caption(
 # --------------------------------------------------------------------------
 # Header
 # --------------------------------------------------------------------------
-st.title("SellUp Stock Bulk Update")
+st.markdown(
+    """
+    <div class="mm-banner">📦 SellUp Stock Sync Tool</div>
+    <div class="mm-subbanner">
+      <b>Mister Mobile Singapore</b> &nbsp;·&nbsp;
+      POS Masterlist → SellUp dealer bulk stock update
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
 st.caption(
     "Writes POS Available Quantity into columns **G** (New · Not Activated), "
-    "**I** (New · Activated) and **K** (Used · Excellent). "
-    "Every other cell in the template is left exactly as uploaded."
+    "**I** (New · Activated) and **K** (Used · Excellent). Every other cell in "
+    "the template is left exactly as uploaded."
 )
 
 if not pos_file or not inventory_file:
     st.info(
-        "Upload the **POS Masterlist** and the **SellUp Bulk Inventory Template** "
-        "in the sidebar to begin. Adding **SellUp Stock Data** carries your "
-        "existing matches across so you only review what is genuinely new."
+        "⬅️ Upload the **POS Masterlist** and the **SellUp Bulk Inventory "
+        "Template** to begin."
+    )
+    st.markdown(
+        """
+        #### First time using this?
+
+        You will not have a **SellUp SKU Registry** yet — that is the file this
+        tool *gives you*, not one you need to find. For today, open
+        **Optional: seed mapping file** and upload your `SellUp Stock Data`
+        sheet instead. Your existing matches carry across, so you only review
+        what is genuinely new.
+
+        When you finish, download the **SellUp SKU Registry**. From then on you
+        upload that one file and ignore the seed mapping entirely — it
+        remembers every match, classification and decision you have made.
+        """
     )
     st.stop()
 
@@ -210,7 +254,7 @@ with st.status("Validating uploads…", expanded=False) as status:
     if registry_file is not None:
         try:
             registry_data = _load_registry(registry_file.getvalue())
-            st.write(f"Registry: {len(registry_data.links):,} locked SKUs")
+            st.write(f"SKU Registry: {len(registry_data.links):,} locked SKUs")
         except RegistryParseError as exc:
             errors.append(f"**SellUp SKU Registry**\n\n{exc}")
         except Exception as exc:  # noqa: BLE001
@@ -226,6 +270,13 @@ if errors:
     for message in errors:
         st.error(message)
     st.stop()
+
+if seed_data is None and registry_data is None:
+    st.warning(
+        "No **SellUp SKU Registry** or seed mapping uploaded, so nothing is "
+        "linked yet and every POS row with stock will land in the review "
+        "queue. Add one of them in the sidebar."
+    )
 
 
 # --------------------------------------------------------------------------
@@ -337,13 +388,14 @@ with tab_review:
     else:
         st.caption(
             "Each row is a POS masterlist SKU with stock that has no confirmed "
-            "SellUp link. Pick a suggestion or classify the row. The export stays "
-            "locked until this queue is empty."
+            "SellUp link. Pick a suggestion or classify the row. The export "
+            "stays locked until this queue is empty."
         )
 
         helper = st.columns([2, 2, 3])
         if helper[0].button(
-            "Accept all high-confidence", use_container_width=True,
+            "Accept all high-confidence",
+            use_container_width=True,
             help="Links every row whose best suggestion scores 100 or above.",
         ):
             applied = 0
@@ -353,15 +405,18 @@ with tab_review:
                 best = item.suggestions[0]
                 if best.confidence == "High":
                     record_decision(
-                        item.pos.stock_type_id, config.DECISION_LINKED,
-                        best.sellup.sku_id, f"auto-accepted (score {best.score})",
+                        item.pos.stock_type_id,
+                        config.DECISION_LINKED,
+                        best.sellup.sku_id,
+                        f"auto-accepted (score {best.score})",
                     )
                     applied += 1
             st.toast(f"Linked {applied} high-confidence match(es).")
             st.rerun()
 
         if helper[1].button(
-            "Classify non-SellUp items", use_container_width=True,
+            "Classify non-SellUp items",
+            use_container_width=True,
             help="Marks laptops, chargers and other hardware SellUp does not "
                  "list as 'Not Selling in SellUp'.",
         ):
@@ -372,7 +427,8 @@ with tab_review:
                 kind = device_kind(item.pos.brand, item.pos.model)
                 if kind in UNSELLABLE_KINDS:
                     record_decision(
-                        item.pos.stock_type_id, config.DECISION_NOT_SELLING,
+                        item.pos.stock_type_id,
+                        config.DECISION_NOT_SELLING,
                         notes=f"auto-classified ({kind})",
                     )
                     applied += 1
@@ -386,10 +442,12 @@ with tab_review:
 
         page_size = 40
         pages = max(1, (len(visible) + page_size - 1) // page_size)
-        page = st.number_input(
-            "Page", min_value=1, max_value=pages, value=1, step=1
-        ) if pages > 1 else 1
-        window = visible[(page - 1) * page_size: page * page_size]
+        page = (
+            st.number_input("Page", min_value=1, max_value=pages, value=1, step=1)
+            if pages > 1
+            else 1
+        )
+        window = visible[(page - 1) * page_size : page * page_size]
 
         rows = []
         option_map: dict[str, dict[str, str]] = {}
@@ -435,8 +493,8 @@ with tab_review:
             )
 
         frame = pd.DataFrame(rows)
-
         all_options = sorted({label for m in option_map.values() for label in m})
+
         edited = st.data_editor(
             frame,
             use_container_width=True,
@@ -456,7 +514,8 @@ with tab_review:
                 "Connectivity": st.column_config.TextColumn(disabled=True, width="small"),
                 "SellUp Colour": st.column_config.TextColumn(disabled=True, width="small"),
                 "Link to SellUp SKU": st.column_config.SelectboxColumn(
-                    options=all_options, width="large",
+                    options=all_options,
+                    width="large",
                     help="Suggestions are ranked by score. Picking one sets the "
                          "decision to Linked automatically.",
                 ),
@@ -499,7 +558,10 @@ with tab_review:
 # ---- Locked matches ------------------------------------------------------
 with tab_locked:
     if not result.locked:
-        st.warning("No locked matches. Upload SellUp Stock Data to carry links over.")
+        st.warning(
+            "No locked matches. Upload a SellUp SKU Registry or the seed "
+            "mapping file to carry your existing links over."
+        )
     else:
         locked_frame = pd.DataFrame(
             [
@@ -558,7 +620,9 @@ with tab_classified:
                         for r in result.not_selling
                     ]
                 ),
-                use_container_width=True, hide_index=True, height=380,
+                use_container_width=True,
+                hide_index=True,
+                height=380,
             )
         else:
             st.caption("Nothing classified yet.")
@@ -580,7 +644,9 @@ with tab_classified:
                         for r in result.not_yet
                     ]
                 ),
-                use_container_width=True, hide_index=True, height=380,
+                use_container_width=True,
+                hide_index=True,
+                height=380,
             )
         else:
             st.caption("Nothing classified yet.")
@@ -605,7 +671,9 @@ with tab_classified:
                     for r in result.match_review
                 ]
             ),
-            use_container_width=True, hide_index=True, height=300,
+            use_container_width=True,
+            hide_index=True,
+            height=300,
         )
 
 
@@ -638,7 +706,9 @@ with tab_diag:
                     for e in pos_data.exclusions
                 ]
             ),
-            use_container_width=True, hide_index=True, height=320,
+            use_container_width=True,
+            hide_index=True,
+            height=320,
         )
 
 
@@ -687,19 +757,20 @@ else:
         )
         left, right = st.columns(2)
         left.download_button(
-            "⬇️ SellUp inventory (upload this)",
+            "⬇️ 1. SellUp inventory — upload this to SellUp",
             data=produced,
             file_name=f"INVENTORIES_UPDATED_{stamp}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             type="primary",
         )
         right.download_button(
-            "⬇️ SellUp SKU Registry (keep this)",
+            "⬇️ 2. SellUp SKU Registry — keep for next time",
             data=registry_bytes,
             file_name=f"SellUp_Match_Review_{stamp}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
         st.caption(
-            "Upload the first file to SellUp. Keep the registry and feed it back "
-            "in next time so today's decisions are remembered."
+            "Upload the first file to SellUp. Save the second one — feed it "
+            "back into **SellUp SKU Registry** next time and every decision "
+            "you made today is remembered."
         )
