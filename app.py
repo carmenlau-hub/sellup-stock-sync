@@ -187,13 +187,6 @@ if not pos_file or not inventory_file:
         Match Review workbook: open the *New Masterlist SKUs* tab, fill in the
         green columns for anything the tool could not decide, and upload it
         back next time. Every decision is remembered from then on.
-
-        #### First run?
-
-        You will not have a SKU Registry yet — that is the file this tool
-        *gives you*. Open **Optional: seed mapping file** and upload your
-        `SellUp Stock Data` sheet instead, so your existing matches carry
-        across.
         """
     )
     st.stop()
