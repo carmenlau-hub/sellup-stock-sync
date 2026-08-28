@@ -3,13 +3,11 @@
 Hard rules enforced here:
 
 * **Column F only.** ``Available Quantity`` already nets off reserved and
-  transit stock. Column G (gross Quantity) is never read, and per-branch
-  columns are never summed.
+  transit stock. Column G is never read, and per-branch columns are never summed.
 * **TELCO rows are dropped.** SellUp has no telco listings and the PRIMARY /
   TELCO pools are never combined.
 * **Export sets and freebies are dropped.**
-* **Apple and Used rows are kept.** Unlike Shopee or Lazada, SellUp trades in
-  Apple hardware and in used devices.
+* **Apple and Used rows are kept.** SellUp trades in both.
 """
 
 from __future__ import annotations
@@ -43,7 +41,6 @@ class PosRow:
 
     @property
     def maker(self) -> str:
-        """Canonical manufacturer, e.g. 'APPLE' for a POS brand of 'IPHONE'."""
         return maker(self.brand)
 
     @property
@@ -52,12 +49,7 @@ class PosRow:
 
     @property
     def slot(self) -> str:
-        """Which SellUp quantity column this row feeds.
-
-        Used stock maps to Excellent. New stock splits on the trailing
-        activation token: ``A`` means Activated, anything else (including no
-        token at all, which is every non-Apple row) means Not Activated.
-        """
+        """Which SellUp quantity column this row feeds."""
         if self.is_used:
             return config.SLOT_USED_EXCELLENT
         if self.spec.activation == config.ACTIVATION_ACTIVATED:
@@ -99,24 +91,15 @@ class PosMasterlist:
         return {r.stock_type_id: r for r in self.rows}
 
     def with_stock(self) -> list[PosRow]:
-        """Rows carrying positive available quantity."""
         return [r for r in self.rows if r.available_qty > 0]
 
-
-# --------------------------------------------------------------------------
-# Exclusion tests
-# --------------------------------------------------------------------------
 
 def _is_freebie(model_upper: str) -> bool:
     return any(tok in model_upper for tok in config.FREEBIE_TOKENS)
 
 
 def _is_export_set(model_upper: str) -> bool:
-    """Detect a parallel-import region set.
-
-    The OnePlus "bundled with a US charger" phrase is stripped first so it is
-    not mistaken for a US export set.
-    """
+    """Detect a parallel-import region set."""
     work = model_upper
     for phrase in config.US_CHARGER_PHRASES:
         work = work.replace(phrase, " ")
@@ -136,10 +119,6 @@ def _coerce_qty(value: object) -> int | None:
         return None
     return max(qty, 0)
 
-
-# --------------------------------------------------------------------------
-# Validation
-# --------------------------------------------------------------------------
 
 def validate_pos_workbook(worksheet) -> list[str]:
     """Return a list of human-readable problems with the POS sheet layout."""
@@ -170,10 +149,6 @@ def validate_pos_workbook(worksheet) -> list[str]:
 
     return problems
 
-
-# --------------------------------------------------------------------------
-# Entry point
-# --------------------------------------------------------------------------
 
 def load_pos_masterlist(source: str | IO[bytes]) -> PosMasterlist:
     """Read a POS ``stock_report`` export into a :class:`PosMasterlist`."""
@@ -213,10 +188,8 @@ def load_pos_masterlist(source: str | IO[bytes]) -> PosMasterlist:
             qty = _coerce_qty(raw_qty)
             if qty is None:
                 exclusions.append(
-                    PosExclusion(
-                        stock_type_id, brand, model, colour, 0,
-                        "Column F (Available Quantity) is blank or non-numeric",
-                    )
+                    PosExclusion(stock_type_id, brand, model, colour, 0,
+                                 "Column F (Available Quantity) is blank or non-numeric")
                 )
                 continue
 

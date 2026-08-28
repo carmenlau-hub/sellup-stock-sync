@@ -3,11 +3,7 @@
 An ``.xlsx`` is a zip of XML parts. Loading one with openpyxl and saving it
 rewrites every part, and that round-trip is **not** lossless for the SellUp
 template: cells holding an empty shared string come back as truly empty, which
-changes 28,000 cells in a file where only a few hundred should move.
-
-Functionally ``''`` and empty are the same to SellUp, but "leave everything
-else untouched" is a hard requirement here, so this module edits the sheet XML
-directly and copies every other zip entry across verbatim.
+changes ~28,000 cells in a file where only a few hundred should move.
 
 A cell is rewritten from::
 
@@ -31,8 +27,6 @@ from xml.etree import ElementTree
 _NS_MAIN = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
 _NS_REL = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
 
-# Matches a whole <c> element, self-closing or not. Cell XML never contains
-# newlines in files produced by Excel or by the SellUp portal.
 _CELL_RE = re.compile(rb'<c r="([A-Z]+[0-9]+)"([^>]*?)(?:/>|>(.*?)</c>)')
 _STYLE_RE = re.compile(rb's="(\d+)"')
 
@@ -66,11 +60,7 @@ def cell_ref(row: int, column: int) -> str:
 
 
 def _sheet_part_map(archive: zipfile.ZipFile) -> dict[str, str]:
-    """Map worksheet display names to their part names inside the zip.
-
-    Excel does not guarantee that ``Smartphones`` lives in ``sheet1.xml``, so
-    the workbook relationships have to be followed rather than assumed.
-    """
+    """Map worksheet display names to their part names inside the zip."""
     workbook_xml = archive.read("xl/workbook.xml")
     rels_xml = archive.read("xl/_rels/workbook.xml.rels")
 
@@ -118,7 +108,6 @@ def _rewrite_sheet(xml: bytes, values: dict[str, int], report: EditReport) -> by
         style_attr = b' s="' + style.group(1) + b'"' if style else b""
         number = str(int(values[ref])).encode("ascii")
         report.cells_written += 1
-        # No t attribute means "number", which is what a Qty cell is.
         return (
             b'<c r="' + ref.encode("ascii") + b'"' + style_attr
             + b"><v>" + number + b"</v></c>"
@@ -137,11 +126,7 @@ def write_cells(
     source: bytes,
     edits: dict[str, dict[str, int]],
 ) -> tuple[bytes, EditReport]:
-    """Apply ``{sheet_name: {cell_ref: value}}`` to a workbook.
-
-    Returns the new file bytes and a report. Every zip entry other than the
-    edited sheets is copied across without being re-encoded.
-    """
+    """Apply ``{sheet_name: {cell_ref: value}}`` to a workbook."""
     report = EditReport()
     buffer = io.BytesIO()
 

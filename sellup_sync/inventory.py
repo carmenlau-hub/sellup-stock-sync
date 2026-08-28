@@ -7,9 +7,6 @@ uploadable to SellUp untouched, so the writer:
 * only ever assigns to columns G, I and K on data rows,
 * refuses to touch a cell in any other column via :func:`_assert_writable`,
 * leaves prices, formulas, styling, merged cells and sheet order alone.
-
-A blank Qty cell means "skip this listing" to SellUp, which is why unmatched
-rows are left as they were instead of being zeroed.
 """
 
 from __future__ import annotations
@@ -36,7 +33,6 @@ class InventoryParseError(Exception):
     """Raised when the SellUp template does not have the expected shape."""
 
 
-# Reverse of config.SLOT_TO_COLUMN, for looking a slot up by column index.
 _COLUMN_TO_SLOT: dict[int, str] = {v: k for k, v in config.SLOT_TO_COLUMN.items()}
 
 
@@ -81,12 +77,8 @@ class SellUpRow:
     def family_key(self) -> tuple:
         base = strip_family_prefix(self.spec.base).replace(" ", "")
         return (
-            self.maker,
-            base,
-            self.spec.storage_gb,
-            self.spec.network,
-            self.spec.case_size_mm,
-            colour_key(self.colour),
+            self.maker, base, self.spec.storage_gb, self.spec.network,
+            self.spec.case_size_mm, colour_key(self.colour),
         )
 
 
@@ -127,10 +119,6 @@ class SellUpInventory:
         return {k: v for k, v in counts.items() if v > 1}
 
 
-# --------------------------------------------------------------------------
-# Validation
-# --------------------------------------------------------------------------
-
 def _normalise_header(value: object) -> str:
     """Headers contain embedded newlines; flatten them for comparison."""
     return clean(str(value or "").replace("\n", " ")).upper()
@@ -165,10 +153,6 @@ def validate_inventory_workbook(workbook) -> list[str]:
 
     return problems
 
-
-# --------------------------------------------------------------------------
-# Reading
-# --------------------------------------------------------------------------
 
 def load_inventory(source: str | IO[bytes] | bytes) -> SellUpInventory:
     """Read the SellUp template, retaining the original bytes for writing."""
@@ -222,10 +206,6 @@ def load_inventory(source: str | IO[bytes] | bytes) -> SellUpInventory:
         workbook.close()
 
 
-# --------------------------------------------------------------------------
-# Writing
-# --------------------------------------------------------------------------
-
 def _assert_writable(column: int) -> None:
     """Guard against any code path attempting to write outside G / I / K."""
     if column not in config.WRITABLE_COLUMNS:
@@ -271,12 +251,7 @@ def write_quantities(
     inventory: SellUpInventory,
     assignments: list[QuantityAssignment],
 ) -> tuple[bytes, WriteReport]:
-    """Apply quantities to the original SellUp workbook.
-
-    Editing is done at the XML level rather than by re-saving the workbook,
-    because an openpyxl round-trip silently converts every empty-string cell
-    to a truly empty one -- around 28,000 cells in this template.
-    """
+    """Apply quantities to the original SellUp workbook."""
     report = WriteReport()
     edits: dict[str, dict[str, int]] = {}
 
@@ -307,14 +282,7 @@ def write_quantities(
 
 
 def diff_against_source(original: bytes, produced: bytes) -> list[str]:
-    """Verify that only columns G, I and K differ between two workbooks.
-
-    Runs two independent checks before the download button is enabled:
-
-    1. every zip part other than the edited worksheets must be byte-identical
-    2. within the edited worksheets, every differing cell must sit in column
-       G, I or K on a data row
-    """
+    """Verify that only columns G, I and K differ between two workbooks."""
     violations: list[str] = []
 
     for part in compare_archives(original, produced):

@@ -5,9 +5,13 @@ The two systems describe the same device very differently:
     POS     "S25 ULTRA 256GB/12 5G-S948B PRIMARY"   colour "TITANIUM BLACK"
     SellUp  model "Galaxy S25 Ultra"  specs "12/256GB"  colour "Titanium Black"
 
-Everything in this module exists to reduce both sides to a comparable
-``DeviceSpec`` so the matcher can work on structured fields instead of raw
-strings.
+Everything here reduces both sides to a comparable ``DeviceSpec`` so the
+matcher works on structured fields rather than raw strings.
+
+Note the ordering in :func:`parse_pos_model`: ``+`` becomes ``PLUS`` before
+any punctuation is stripped, and the POS model code / channel tag are removed
+only after the discriminators have been read. Getting that order wrong is what
+caused the 28 Aug wrong locks.
 """
 
 from __future__ import annotations
@@ -17,10 +21,7 @@ import unicodedata
 from dataclasses import dataclass
 
 from . import config
-
-# --------------------------------------------------------------------------
-# Basic string helpers
-# --------------------------------------------------------------------------
+from .discriminators import normalise_plus
 
 _WHITESPACE_RE = re.compile(r"\s+")
 _NON_ALNUM_RE = re.compile(r"[^A-Z0-9 ]+")
@@ -139,7 +140,9 @@ def _strip_us_charger(text: str) -> tuple[str, bool]:
 
 def parse_pos_model(model: object) -> DeviceSpec:
     """Decompose a POS model string into a :class:`DeviceSpec`."""
-    raw = upper(model)
+    # '+' becomes PLUS first, so the variant token survives tokenising.
+    raw = normalise_plus(clean(model))
+    raw = _WHITESPACE_RE.sub(" ", raw).strip()
     work = raw
 
     # 1. Channel suffix.
@@ -159,7 +162,7 @@ def parse_pos_model(model: object) -> DeviceSpec:
         activation = config.ACTIVATION_ACTIVATED
         work = re.sub(r"\bA$", "", work).strip()
 
-    # 3. Trailing internal model code (-S948B) carries no matching value.
+    # 3. Trailing internal model code (-S947B) carries no matching value.
     work = _MODEL_CODE_RE.sub(" ", work)
 
     # 4. US-charger phrase is part of the identity, keep a marker for it.
@@ -227,8 +230,13 @@ def parse_pos_model(model: object) -> DeviceSpec:
 
 
 def parse_sellup_specs(model: object, specs: object) -> DeviceSpec:
-    """Decompose a SellUp ``Model`` + ``Specs`` pair into a :class:`DeviceSpec`."""
-    raw_model = upper(model)
+    """Decompose a SellUp ``Model`` + ``Specs`` pair into a :class:`DeviceSpec`.
+
+    ``normalise_plus`` is applied to the model only. The Specs column contains
+    ``"Wi-Fi + Cellular"``, where ``+`` is a conjunction rather than a variant
+    marker.
+    """
+    raw_model = normalise_plus(clean(model))
     raw_specs = upper(specs)
 
     storage_gb = ram_gb = None
@@ -357,6 +365,22 @@ def colours_match(a: object, b: object) -> bool:
     return False
 
 
+def colour_is_narrowing(pos_colour: object, sellup_colour: object) -> bool:
+    """True when one colour name is a single-word shortening of the other.
+
+    ``IVORY WHITE`` against ``White`` is the SellUp house style, not a
+    different finish. :func:`colours_match` deliberately rejects a one-word
+    subset so plain ``BLACK`` cannot swallow ``TITANIUM BLACK``, but that
+    strictness cost the correct Magic V6 listing 40 points on 28 Aug. This
+    softer test is used only to reduce the penalty, never to claim a match.
+    """
+    wa = set(normalise_colour(pos_colour).split())
+    wb = set(normalise_colour(sellup_colour).split())
+    if not wa or not wb or wa == wb:
+        return False
+    return wa < wb or wb < wa
+
+
 # --------------------------------------------------------------------------
 # Brand normalisation
 # --------------------------------------------------------------------------
@@ -392,10 +416,6 @@ def maker(brand: object) -> str:
         return _POS_BRAND_TO_MAKER[b]
     return b.replace(" ", "")
 
-
-# --------------------------------------------------------------------------
-# Model-family hints
-# --------------------------------------------------------------------------
 
 _FAMILY_PREFIXES: tuple[str, ...] = ("GALAXY", "APPLE", "REDMI", "POCO", "WATCH")
 

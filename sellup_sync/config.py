@@ -9,14 +9,11 @@ from __future__ import annotations
 # --------------------------------------------------------------------------
 # SellUp bulk inventory template
 # --------------------------------------------------------------------------
-# The template ships four worksheets. Row 1 = title, row 2 = instructions,
-# row 3 = header, data begins on row 4.
 SELLUP_SHEETS: tuple[str, ...] = ("Smartphones", "Tablets", "Smartwatches", "Audio")
 
 SELLUP_HEADER_ROW = 3
 SELLUP_FIRST_DATA_ROW = 4
 
-# 1-based column indices in the SellUp template.
 COL_SKU_ID = 1       # A
 COL_BRAND = 2        # B
 COL_MODEL = 3        # C
@@ -33,11 +30,8 @@ COL_GOOD_QTY = 13    # M
 COL_FAIR_PRICE = 14  # N
 COL_FAIR_QTY = 15    # O
 
-# The ONLY columns this application is ever permitted to write to.
 WRITABLE_COLUMNS: frozenset[int] = frozenset({COL_NA_QTY, COL_A_QTY, COL_EXC_QTY})
 
-# Header text expected on row 3, used for pre-flight validation. Newlines in the
-# real file are normalised to single spaces before comparison.
 EXPECTED_SELLUP_HEADERS: tuple[str, ...] = (
     "SKU ID",
     "Brand",
@@ -59,8 +53,6 @@ EXPECTED_SELLUP_HEADERS: tuple[str, ...] = (
 # --------------------------------------------------------------------------
 # Condition slots
 # --------------------------------------------------------------------------
-# A "slot" is the (SellUp SKU ID, condition) pair that receives a quantity.
-# One SellUp SKU row can own up to three independent slots.
 SLOT_NEW_NA = "New (Not Activated)"
 SLOT_NEW_A = "New (Activated)"
 SLOT_USED_EXCELLENT = "Excellent"
@@ -74,9 +66,8 @@ SLOT_TO_COLUMN: dict[str, int] = {
 ALL_SLOTS: tuple[str, ...] = (SLOT_NEW_NA, SLOT_NEW_A, SLOT_USED_EXCELLENT)
 
 # --------------------------------------------------------------------------
-# POS masterlist (stock_report_DD-MM-YYYY.xlsx)
+# POS masterlist
 # --------------------------------------------------------------------------
-# Rows 1-2 form a two-level header; data starts on row 3.
 POS_HEADER_ROW = 1
 POS_SUBHEADER_ROW = 2
 POS_FIRST_DATA_ROW = 3
@@ -101,31 +92,22 @@ POS_REQUIRED_HEADERS: tuple[str, ...] = (
 # --------------------------------------------------------------------------
 # Business rules
 # --------------------------------------------------------------------------
-# Export-set region tokens. A POS row whose model contains any of these as a
-# whole word is a parallel-import set and is never sold on SellUp.
 EXPORT_TOKENS: frozenset[str] = frozenset(
     {"JP", "TH", "TW", "HK", "CN", "KR", "MY", "VN", "US"}
 )
 
-# OnePlus sets bundled with a US charger legitimately contain the token "US".
-# This phrase is stripped before the export-token test runs.
 US_CHARGER_PHRASES: tuple[str, ...] = (
     "W US 80W CHARGER",
     "W/US CHARGER",
     "W US CHARGER",
 )
 
-# Models containing these words are giveaway units, not sellable stock.
 FREEBIE_TOKENS: frozenset[str] = frozenset({"FREEBIE", "FREEBIES"})
 
-# Channel suffixes. SellUp has no telco listings, so TELCO stock is excluded
-# and PRIMARY stock is used on its own -- the two pools are never summed.
 CHANNEL_PRIMARY = "PRIMARY"
 CHANNEL_TELCO = "TELCO"
 EXCLUDED_CHANNELS: frozenset[str] = frozenset({CHANNEL_TELCO})
 
-# Activation tokens appearing at the end of a POS model string. Only Apple
-# phones carry these; everything else is treated as Not Activated.
 ACTIVATION_NOT_ACTIVATED = "NA"
 ACTIVATION_ACTIVATED = "A"
 DEFAULT_ACTIVATION = ACTIVATION_NOT_ACTIVATED
@@ -141,7 +123,6 @@ SHEET_NOT_SELLING = "Not Selling in SellUp"
 SHEET_NOT_YET = "Not on SellUp Yet"
 SHEET_LINK_HISTORY = "Link History"
 
-# Tabs that MUST be present in an uploaded registry.
 REQUIRED_REGISTRY_SHEETS: tuple[str, ...] = (
     SHEET_LOCKED,
     SHEET_NEW_SKUS,
@@ -168,9 +149,6 @@ LOCKED_HEADERS: tuple[str, ...] = (
     "How linked",
 )
 
-# The review sheet Carmen actually works in. Everything the reviewer needs to
-# judge a row is on one line: the POS side, the tool's best suggestions, and
-# the two cells she fills in.
 NEW_SKUS_HEADERS: tuple[str, ...] = (
     "#",
     "Masterlist Stock Type ID",
@@ -192,7 +170,6 @@ NEW_SKUS_HEADERS: tuple[str, ...] = (
     "Notes",
 )
 
-# Columns the reviewer is expected to edit, highlighted in the workbook.
 NEW_SKUS_INPUT_COLUMNS: tuple[str, ...] = (
     "Link to SellUp SKU ID",
     "Reviewer Decision",
@@ -209,6 +186,7 @@ MATCH_REVIEW_HEADERS: tuple[str, ...] = (
     "SellUp Colour",
     "Condition",
     "Current Seller Stock",
+    "Status",
     "Corrected Masterlist ID",
     "Reviewer Decision",
     "Notes",
@@ -224,9 +202,6 @@ UNSOLD_HEADERS: tuple[str, ...] = (
     "Available Qty",
 )
 
-# The complete SKU-to-POS link map, including links whose POS row happens to
-# be out of stock today. Locked Matches only shows what was synced this run,
-# so without this sheet a registry round-trip would silently lose history.
 LINK_HISTORY_HEADERS: tuple[str, ...] = (
     "SellUp SKU ID",
     "LOCKED Masterlist ID(s)",
@@ -250,30 +225,32 @@ DECISION_UNREVIEWED = ""
 DECISION_LINKED = "Linked"
 DECISION_NOT_SELLING = "Not Selling in SellUp"
 DECISION_NOT_YET = "Not on SellUp Yet"
+# Bug 3: lets the reviewer say "this must not be linked to anything", which
+# suppresses both the crosswalk and automatic matching for that row.
+DECISION_DO_NOT_LINK = "Do Not Link"
 
 DECISION_OPTIONS: tuple[str, ...] = (
     DECISION_UNREVIEWED,
     DECISION_LINKED,
     DECISION_NOT_SELLING,
     DECISION_NOT_YET,
+    DECISION_DO_NOT_LINK,
 )
 
-# A row counts as reviewed once it carries any non-blank decision.
 TERMINAL_DECISIONS: frozenset[str] = frozenset(
-    {DECISION_LINKED, DECISION_NOT_SELLING, DECISION_NOT_YET}
+    {DECISION_LINKED, DECISION_NOT_SELLING, DECISION_NOT_YET, DECISION_DO_NOT_LINK}
 )
 
 # --------------------------------------------------------------------------
 # Automatic linking
 # --------------------------------------------------------------------------
-# A suggestion at or above this score is applied without asking. The scoring
-# weights in matching.py mean 100 requires the manufacturer, the storage, the
-# colour and the model name all to agree -- the same bar the old "Accept all
-# high-confidence" button used.
-AUTO_LINK_MIN_SCORE = 100
+# When True, any masterlist ID feeding two different listings aborts the run
+# (the spec's literal 'fail loudly'). When False the offending IDs are
+# quarantined instead: written to neither listing and sent to the review
+# sheet, so one bad crosswalk row cannot block 1,100 good ones.
+STRICT_EXCLUSIVITY = False
 
-# Laptops, chargers and other hardware SellUp has no worksheet for are filed
-# under "Not Selling in SellUp" automatically.
+AUTO_LINK_MIN_SCORE = 100
 AUTO_CLASSIFY_UNSELLABLE = True
 
 LINKED_BY_SEED = "carried over"
@@ -283,23 +260,18 @@ LINKED_BY_REVIEWER = "reviewed"
 # --------------------------------------------------------------------------
 # Output behaviour
 # --------------------------------------------------------------------------
-# SellUp skips a listing entirely when its Qty cell is blank, so unmatched
-# rows are left untouched rather than zeroed. Locked rows whose POS stock has
-# fallen to zero DO get an explicit 0 so they are delisted.
 BLANK_MEANS_SKIP = True
 
-# Anti-oversell buffer: any computed quantity at or below this threshold is
-# written as 0. Default 0 = disabled, exposed as a sidebar slider.
 DEFAULT_OVERSELL_BUFFER = 0
 MAX_OVERSELL_BUFFER = 5
 
 # --------------------------------------------------------------------------
 # Workbook styling -- mirrors the existing Shopee Match Review registry
 # --------------------------------------------------------------------------
-COLOR_NAVY = "1F3864"        # index / decision headers, white bold text
-COLOR_ORANGE = "F4B183"      # platform-side (SellUp) columns
-COLOR_YELLOW = "FFD966"      # masterlist-side (POS) columns
-COLOR_GREEN = "C6E0B4"       # cells the reviewer fills in
+COLOR_NAVY = "1F3864"
+COLOR_ORANGE = "F4B183"
+COLOR_YELLOW = "FFD966"
+COLOR_GREEN = "C6E0B4"
 COLOR_WHITE = "FFFFFF"
 COLOR_BLACK = "000000"
 

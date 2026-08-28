@@ -1,7 +1,6 @@
 """Loader for the historical ``SellUp Stock Data.xlsx`` mapping sheet.
 
-This is the record of links confirmed by hand before the tool existed. It is a
-flat three-column sheet:
+A flat three-column sheet::
 
     POS Stock Type ID | SellUp Variation ID | SellUp Variation Name
 
@@ -10,16 +9,15 @@ with two sentinels in the first column:
 * ``-`` / blank -- placeholder row, no link recorded
 * ``not in pos`` -- the SellUp listing has been reviewed and has no POS source
 
-One SellUp SKU is frequently fed by several POS IDs. In the real data
-``SKU-000074155`` is linked to three rows at once::
+One SellUp SKU is frequently fed by several POS IDs. ``SKU-000074155`` is
+linked to three rows at once::
 
     31628  Used  17 PRO MAX 256GB     SILVER  -> Excellent      (col K)
     31242  New   17 PRO MAX 256GB NA  SILVER  -> Not Activated  (col G)
     31243  New   17 PRO MAX 256GB A   SILVER  -> Activated      (col I)
 
-so links are grouped by **condition slot** and summed within a slot. They are
-never summed across slots -- that would report one physical handset as
-available in three different conditions at once.
+so links are grouped by **condition slot** and summed within a slot, never
+across slots.
 """
 
 from __future__ import annotations
@@ -69,10 +67,7 @@ class SeedMapping:
 
 
 def _normalise_pos_id(value: object) -> str | None:
-    """Return a clean POS ID, or ``None`` for a blank/placeholder cell.
-
-    Excel stores these IDs as floats, so ``31628.0`` has to become ``"31628"``.
-    """
+    """Return a clean POS ID, or ``None`` for a blank/placeholder cell."""
     if value is None:
         return None
     if isinstance(value, (int, float)):
@@ -135,9 +130,7 @@ def load_seed_mapping(source: str | IO[bytes]) -> SeedMapping:
             seen.add((sku, pos_id))
             mapping.links.setdefault(sku, []).append(pos_id)
 
-        # A SKU that ended up with a real link is no longer "not in pos".
         mapping.not_in_pos -= set(mapping.links)
-
         return mapping
     finally:
         workbook.close()
