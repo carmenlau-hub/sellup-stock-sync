@@ -35,6 +35,21 @@ class InventoryParseError(Exception):
 
 _COLUMN_TO_SLOT: dict[int, str] = {v: k for k, v in config.SLOT_TO_COLUMN.items()}
 
+# The price cell that sits immediately left of each quantity cell.
+SLOT_TO_PRICE_COLUMN: dict[str, int] = {
+    slot: column - 1 for slot, column in config.SLOT_TO_COLUMN.items()
+}
+
+
+def _positive(value: object) -> bool:
+    """True when a price or quantity cell carries a number above zero."""
+    if value is None or value == "":
+        return False
+    try:
+        return float(str(value).strip()) > 0
+    except (TypeError, ValueError):
+        return False
+
 
 @dataclass
 class SellUpRow:
@@ -49,6 +64,28 @@ class SellUpRow:
     colour: str
     spec: DeviceSpec
     current_qty: dict[str, object] = field(default_factory=dict)
+    current_price: dict[str, object] = field(default_factory=dict)
+
+    @property
+    def listed_conditions(self) -> list[str]:
+        """Conditions this listing is actually live in.
+
+        A SellUp row exists in the catalogue whether or not the dealer
+        sells it. Setting a price is what makes it a real listing, so a
+        priced condition counts as live even at zero stock -- that is the
+        Honor X7a case: $118 on the shelf with nothing feeding it.
+        """
+        live: list[str] = []
+        for slot in config.ALL_SLOTS:
+            if _positive(self.current_price.get(slot)) or _positive(
+                self.current_qty.get(slot)
+            ):
+                live.append(slot)
+        return live
+
+    @property
+    def is_listed(self) -> bool:
+        return bool(self.listed_conditions)
 
     @property
     def maker(self) -> str:
@@ -195,6 +232,10 @@ def load_inventory(source: str | IO[bytes] | bytes) -> SellUpInventory:
                         current_qty={
                             slot: worksheet.cell(excel_row, col).value
                             for slot, col in config.SLOT_TO_COLUMN.items()
+                        },
+                        current_price={
+                            slot: worksheet.cell(excel_row, col).value
+                            for slot, col in SLOT_TO_PRICE_COLUMN.items()
                         },
                     )
                 )

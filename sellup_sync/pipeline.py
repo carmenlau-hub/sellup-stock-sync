@@ -86,12 +86,27 @@ class NewMasterlistSku:
 
 @dataclass
 class OrphanListing:
-    """A SellUp listing holding stock that no POS row feeds."""
+    """A live SellUp listing that no POS row feeds."""
 
     sellup: SellUpRow
     slot: str
     current_qty: object
     was_linked: bool
+    current_price: object = None
+    status: str = ""
+
+    @property
+    def has_stock(self) -> bool:
+        return _positive(self.current_qty)
+
+    @property
+    def rank(self) -> int:
+        """Sort key: the rows that can cost money come first."""
+        if self.was_linked:
+            return 0          # lost its source this run, written to 0
+        if self.has_stock:
+            return 1          # advertising stock nothing feeds
+        return 2              # priced, no stock -- a mapping job
 
 
 @dataclass
@@ -384,7 +399,9 @@ def zero_out_sold_slots(
                     sellup=row,
                     slot=slot,
                     current_qty=row.current_qty.get(slot),
+                    current_price=row.current_price.get(slot),
                     was_linked=True,
+                    status="lost its POS source — set to 0",
                 )
             )
     return extra, orphans
@@ -395,27 +412,37 @@ def find_unsourced_listings(
     ever_linked: set[str],
     no_pos_source: set[str],
 ) -> list[OrphanListing]:
-    """SellUp listings holding stock that no POS row has ever fed.
+    """Every **live** SellUp listing that no POS row feeds.
 
-    Bug 3: listings like the Honor X7a trio (SKU-000064877/8/9) held a unit
-    each on SellUp but appeared on no tab of the workbook, so there was no way
-    for a reviewer to reach them. Any listing advertising stock with no link
-    now surfaces on the Match Review tab.
+    "Live" means priced or stocked, not merely present in the catalogue. Of
+    the ~6,769 rows SellUp ships, ~2,980 are blank catalogue entries that are
+    not for sale; listing those would bury the ones that matter.
+
+    Stock alone is too narrow a test. The Honor X7a trio
+    (SKU-000064877/8/9) sit at $118 with zero stock -- a real listing on the
+    shopfront with nothing behind it, and exactly what this tab exists to
+    surface. Filtering on stock hid them, which is how they went unnoticed.
     """
     out: list[OrphanListing] = []
     for row in inventory.rows:
         if row.sku_id in ever_linked:
             continue
-        for slot in config.ALL_SLOTS:
-            if _positive(row.current_qty.get(slot)):
-                out.append(
-                    OrphanListing(
-                        sellup=row,
-                        slot=slot,
-                        current_qty=row.current_qty.get(slot),
-                        was_linked=row.sku_id in no_pos_source,
-                    )
+        for slot in row.listed_conditions:
+            quantity = row.current_qty.get(slot)
+            out.append(
+                OrphanListing(
+                    sellup=row,
+                    slot=slot,
+                    current_qty=quantity,
+                    current_price=row.current_price.get(slot),
+                    was_linked=False,
+                    status=(
+                        "HAS STOCK, no POS source"
+                        if _positive(quantity)
+                        else "listed with a price, no POS source"
+                    ),
                 )
+            )
     return out
 
 
@@ -635,8 +662,10 @@ def run_pipeline(
     result.assignments.sort(key=lambda a: (a.sheet, a.excel_row, a.column))
     result.delisted_count = len(delistings)
 
-    result.match_review = delisted_orphans + find_unsourced_listings(
-        inventory, ever_linked, result.no_pos_source
+    result.match_review = sorted(
+        delisted_orphans
+        + find_unsourced_listings(inventory, ever_linked, result.no_pos_source),
+        key=lambda o: (o.rank, o.sellup.sheet, o.sellup.sku_id, o.slot),
     )
 
     # -- Reporting --------------------------------------------------------
@@ -685,14 +714,26 @@ def run_pipeline(
                 "set to 0 to delist them.",
             )
         )
-    unsourced = [o for o in result.match_review if not o.was_linked]
-    if unsourced:
+    with_stock = [o for o in result.match_review if not o.was_linked and o.has_stock]
+    priced_only = [
+        o for o in result.match_review if not o.was_linked and not o.has_stock
+    ]
+    if with_stock:
         result.issues.append(
             ValidationIssue(
                 "warning",
-                f"{len(unsourced)} SellUp listing(s) hold stock but have no POS "
-                "source. They are on the Match Review tab and were left untouched.",
-                ", ".join(sorted({o.sellup.sku_id for o in unsourced})[:20]),
+                f"{len(with_stock)} SellUp listing(s) are advertising stock with no "
+                "POS source. They were left untouched — check these first.",
+                ", ".join(sorted({o.sellup.sku_id for o in with_stock})[:20]),
+            )
+        )
+    if priced_only:
+        result.issues.append(
+            ValidationIssue(
+                "info",
+                f"{len(priced_only)} live SellUp listing(s) carry a price but have no "
+                "POS source, so nothing can ever feed them. They are on the Match "
+                "Review tab as a mapping backlog.",
             )
         )
 

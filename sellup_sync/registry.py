@@ -41,7 +41,7 @@ _BODY_FONT = Font(size=config.BASE_FONT_SIZE)
 
 _PLATFORM_HEADERS = {
     "SellUp Sheet", "SellUp SKU ID", "SellUp Model", "Storage", "Connectivity",
-    "SellUp Colour", "Condition", "Current Seller Stock", "Status",
+    "SellUp Colour", "Condition", "Current Seller Stock", "Status", "Seller Price",
     "Suggested SellUp SKU ID", "Suggested SellUp Listing", "Confidence",
     "Score", "Why", "Alternative 2", "Alternative 3",
 }
@@ -63,7 +63,7 @@ _COLUMN_WIDTHS: dict[str, float] = {
     "Suggested SellUp Listing": 42, "Confidence": 12, "Score": 8, "Why": 40,
     "Alternative 2": 42, "Alternative 3": 42, "Link to SellUp SKU ID": 22,
     "Reviewer Decision": 22, "Notes": 30, "Current Seller Stock": 18,
-    "Status": 26, "Corrected Masterlist ID": 22, "Category": 10,
+    "Status": 34, "Seller Price": 13, "Corrected Masterlist ID": 22, "Category": 10,
 }
 
 
@@ -275,12 +275,27 @@ def load_registry(source: str | IO[bytes]) -> Registry:
                     if pid not in bucket:
                         bucket.append(pid)
 
+        # Match Review -> only rows the reviewer has actually ruled on.
+        #
+        # This tab now lists every live listing with no POS source, which is a
+        # backlog of a couple of thousand rows rather than a set of decisions.
+        # Recording all of them as "no POS source" would have the tool assert a
+        # judgement Carmen never made, and that flag is permanent. A row counts
+        # only once a Reviewer Decision is filled in.
         worksheet = workbook[config.SHEET_MATCH_REVIEW]
         sku_col = _column_index(worksheet, "SellUp SKU ID")
+        decision_col = _column_index(worksheet, "Reviewer Decision")
         if sku_col:
             for row in range(2, worksheet.max_row + 1):
                 sku = clean(worksheet.cell(row, sku_col).value)
-                if sku:
+                if not sku:
+                    continue
+                decision = (
+                    clean(worksheet.cell(row, decision_col).value)
+                    if decision_col
+                    else ""
+                )
+                if decision:
                     registry.no_pos_source.add(sku)
 
         return registry
@@ -392,13 +407,12 @@ def _new_sku_rows(new_skus: list[NewMasterlistSku]) -> list[list[object]]:
 
 
 def _match_review_rows(orphans) -> list[list[object]]:
+    """Every live SellUp listing with no POS source, most urgent first."""
     return [
         [
             idx, o.sellup.sheet, o.sellup.sku_id, o.sellup.model,
             o.sellup.storage_label, o.sellup.connectivity_label, o.sellup.colour,
-            o.slot, o.current_qty,
-            "lost its POS source — set to 0" if o.was_linked
-            else "no POS source — left untouched",
+            o.slot, o.current_price, o.current_qty, o.status,
             "", "", "",
         ]
         for idx, o in enumerate(orphans, start=1)

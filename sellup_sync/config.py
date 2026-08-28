@@ -185,6 +185,7 @@ MATCH_REVIEW_HEADERS: tuple[str, ...] = (
     "Connectivity",
     "SellUp Colour",
     "Condition",
+    "Seller Price",
     "Current Seller Stock",
     "Status",
     "Corrected Masterlist ID",
