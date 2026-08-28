@@ -4,9 +4,6 @@ Upload, download, done. The tool links everything it is confident about,
 files the obvious non-SellUp hardware, and hands back two files: the SellUp
 inventory to upload, and a Match Review workbook for anything it could not
 decide. The reviewing happens in Excel, not in this browser window.
-
-Run locally:      streamlit run app.py
-Deployed on:      Streamlit Community Cloud
 """
 
 from __future__ import annotations
@@ -24,7 +21,7 @@ from sellup_sync.inventory import (
     load_inventory,
     write_quantities,
 )
-from sellup_sync.matching import SuggestionIndex
+from sellup_sync.matching import SuggestionIndex, audit_link
 from sellup_sync.pipeline import run_pipeline
 from sellup_sync.pos import PosParseError, load_pos_masterlist, summarise_pos
 from sellup_sync.registry import (
@@ -34,11 +31,7 @@ from sellup_sync.registry import (
 )
 from sellup_sync.seed import SeedParseError, load_seed_mapping, summarise_seed
 
-st.set_page_config(
-    page_title="SellUp Stock Sync Tool",
-    page_icon="📦",
-    layout="wide",
-)
+st.set_page_config(page_title="SellUp Stock Sync Tool", page_icon="📦", layout="wide")
 
 st.markdown(
     """
@@ -46,7 +39,6 @@ st.markdown(
       .block-container { padding-top: 2.5rem; }
       div[data-testid="stMetricValue"] { font-size: 1.6rem; }
       .stDownloadButton button { width: 100%; height: 3.2rem; font-weight: 600; }
-      /* Matches the TikTok sync tool: yellow slab, black caption bar. */
       .mm-banner {
         background: #FFE900; color: #000000; font-size: 2rem; font-weight: 800;
         padding: 26px 30px; border-radius: 4px 4px 0 0; letter-spacing: -0.02em;
@@ -62,9 +54,6 @@ st.markdown(
 )
 
 
-# --------------------------------------------------------------------------
-# Cached loaders
-# --------------------------------------------------------------------------
 @st.cache_data(show_spinner=False)
 def _load_pos(raw: bytes):
     return load_pos_masterlist(io.BytesIO(raw))
@@ -86,23 +75,20 @@ def _load_registry(raw: bytes):
 
 
 # --------------------------------------------------------------------------
-# Sidebar — uploads
+# Sidebar
 # --------------------------------------------------------------------------
 st.sidebar.header("1 · Upload files")
 
 pos_file = st.sidebar.file_uploader(
-    "POS Masterlist (stock report)",
-    type=["xlsx", "xlsm", "csv"],
+    "POS Masterlist (stock report)", type=["xlsx", "xlsm", "csv"],
     help="stock_report_DD-MM-YYYY.xlsx exported from POS.",
 )
 inventory_file = st.sidebar.file_uploader(
-    "SellUp Bulk Inventory Template",
-    type=["xlsx"],
+    "SellUp Bulk Inventory Template", type=["xlsx"],
     help="INVENTORIES_*.xlsx downloaded from the SellUp dealer portal.",
 )
 registry_file = st.sidebar.file_uploader(
-    "SellUp SKU Registry",
-    type=["xlsx"],
+    "SellUp SKU Registry", type=["xlsx"],
     help="SellUp_Match_Review_*.xlsx — the file this tool gives you at the end "
          "of every run. Leave empty on your first run.",
 )
@@ -120,32 +106,38 @@ with st.sidebar.expander("Optional: seed mapping file"):
 st.sidebar.header("2 · Settings")
 
 buffer = st.sidebar.slider(
-    "Anti-oversell buffer",
-    0,
-    config.MAX_OVERSELL_BUFFER,
+    "Anti-oversell buffer", 0, config.MAX_OVERSELL_BUFFER,
     config.DEFAULT_OVERSELL_BUFFER,
-    help="Quantities at or below this number are written as 0. Thinly-spread "
-         "single units are the most common cause of overselling. 0 disables it.",
+    help="Quantities at or below this number are written as 0. 0 disables it.",
 )
 
 with st.sidebar.expander("Automatic matching"):
     auto_link = st.checkbox(
         "Link confident matches automatically", value=True,
-        help="Applies a suggestion when the manufacturer, storage, colour and "
-             "model name all agree. Everything auto-linked is marked in the "
-             "'How linked' column of the Locked Matches tab.",
+        help="Applies a suggestion only when the variant suffix, model number, "
+             "network, storage, RAM and colour all agree.",
     )
     auto_link_min_score = st.slider(
-        "Confidence needed", 75, 130, config.AUTO_LINK_MIN_SCORE,
-        help="Higher means fewer automatic links and more rows to review by "
-             "hand. 100 requires storage, colour and model name to all agree.",
-        disabled=not auto_link,
+        "Confidence needed", 75, 130, config.AUTO_LINK_MIN_SCORE, disabled=not auto_link
     )
     auto_classify = st.checkbox(
         "File laptops and accessories automatically", value=True,
-        help="SellUp has no worksheet for MacBooks, chargers or styluses, so "
-             "these go straight to 'Not Selling in SellUp'.",
+        help="SellUp has no worksheet for MacBooks, chargers or styluses.",
     )
+    strict = st.checkbox(
+        "Stop the run on a link conflict", value=config.STRICT_EXCLUSIVITY,
+        help="A masterlist ID pointing at two different listings would "
+             "double-count. Off: those IDs are written to neither listing and "
+             "sent to the review sheet. On: the whole run stops.",
+    )
+
+st.sidebar.header("3 · Audit")
+audit_existing = st.sidebar.checkbox(
+    "Re-check existing locks", value=True,
+    help="Re-examines every carried-over link against the discriminator rules "
+         "and reports any that disagree. This is how the 16 wrong locks on "
+         "28 Aug were found.",
+)
 
 
 # --------------------------------------------------------------------------
@@ -193,7 +185,7 @@ if not pos_file or not inventory_file:
 
 
 # --------------------------------------------------------------------------
-# Pre-flight validation
+# Pre-flight
 # --------------------------------------------------------------------------
 errors: list[str] = []
 pos_data = inventory_data = seed_data = registry_data = None
@@ -204,7 +196,7 @@ with st.status("Reading uploads…", expanded=False) as status:
         st.write(f"POS masterlist: {len(pos_data.rows):,} sellable rows")
     except PosParseError as exc:
         errors.append(f"**POS Masterlist**\n\n{exc}")
-    except Exception as exc:  # noqa: BLE001 - surfaced to the user verbatim
+    except Exception as exc:  # noqa: BLE001
         errors.append(f"**POS Masterlist** could not be read: {exc}")
 
     try:
@@ -247,13 +239,12 @@ if errors:
 if seed_data is None and registry_data is None:
     st.warning(
         "No **SellUp SKU Registry** or seed mapping uploaded, so nothing is "
-        "linked yet and almost every POS row will land in the review workbook. "
-        "Add one of them in the sidebar."
+        "linked yet and almost every POS row will land in the review workbook."
     )
 
 
 # --------------------------------------------------------------------------
-# Merge link sources and run
+# Run
 # --------------------------------------------------------------------------
 merged_links: dict[str, list[str]] = {}
 merged_not_in_pos: set[str] = set()
@@ -274,8 +265,6 @@ if registry_data is not None:
 
 
 class _Links:
-    """Adapter presenting the merged sources with the SeedMapping interface."""
-
     def __init__(self, links, not_in_pos):
         self.links = links
         self.not_in_pos = not_in_pos
@@ -299,13 +288,37 @@ with st.spinner("Matching stock…"):
         auto_link=auto_link,
         auto_link_min_score=auto_link_min_score,
         auto_classify=auto_classify,
+        strict_exclusivity=strict,
     )
 
 metrics = result.metrics()
 
+# Re-check every lock that survived, using the same rules that reject a bad
+# suggestion. Locks carried over from before the fix are not re-derived, so
+# this is the only thing that will surface one.
+suspect: list[dict] = []
+if audit_existing:
+    with st.spinner("Auditing existing locks…"):
+        for match in result.locked:
+            for pos_row in match.pos_rows:
+                reason = audit_link(pos_row, match.sellup)
+                if reason:
+                    suspect.append(
+                        {
+                            "Masterlist ID": pos_row.stock_type_id,
+                            "POS model": pos_row.model,
+                            "POS colour": pos_row.colour,
+                            "Qty": pos_row.available_qty,
+                            "Locked to": match.sellup.sku_id,
+                            "Listing": match.sellup.display,
+                            "Disagreement": reason,
+                            "How linked": match.origin,
+                        }
+                    )
+
 
 # --------------------------------------------------------------------------
-# Downloads first -- this is what the page is for
+# Downloads
 # --------------------------------------------------------------------------
 st.subheader("Your files")
 
@@ -327,9 +340,7 @@ if violations:
     st.code("\n".join(violations))
     st.stop()
 
-registry_bytes = build_registry_workbook(
-    result, datetime.now().strftime("%d-%m-%Y %H:%M")
-)
+registry_bytes = build_registry_workbook(result, datetime.now().strftime("%d-%m-%Y %H:%M"))
 
 left, right = st.columns(2)
 left.download_button(
@@ -351,17 +362,30 @@ st.success(
     f"changed, all within columns G, I and K."
 )
 
+if suspect:
+    st.error(
+        f"**{len(suspect)} existing lock(s) disagree on a hard discriminator** — "
+        "variant suffix, model number or network. These were locked before the "
+        "rules tightened and are still in the file. Correct them on the "
+        "*New Masterlist SKUs* tab; a reviewer link overrides the crosswalk."
+    )
+    st.dataframe(pd.DataFrame(suspect), use_container_width=True, hide_index=True)
+
+if result.quarantined:
+    st.warning(
+        f"**{len(result.quarantined)} masterlist ID(s) pointed at two different "
+        "listings.** Their stock was written to neither, so nothing is "
+        "double-counted. Set the correct SKU on the review sheet to settle it."
+    )
+    st.code("\n".join(result.quarantined.values()))
+
 if result.unreviewed_count:
     st.info(
         f"**{result.unreviewed_count:,} row(s) still need your judgement.** They are "
         "in file 2, on the **New Masterlist SKUs** tab. Fill in the green "
         "**Link to SellUp SKU ID** or **Reviewer Decision** column, save, and "
-        "upload it back as the SKU Registry next time. The tool's best guess "
-        "is already in the *Suggested SellUp SKU ID* column — copy it across "
-        "if it looks right."
+        "upload it back as the SKU Registry next time."
     )
-else:
-    st.info("Nothing left to review. Every POS row with stock is accounted for.")
 
 
 # --------------------------------------------------------------------------
@@ -372,17 +396,20 @@ st.subheader("Run summary")
 
 row1 = st.columns(5)
 row1[0].metric("Locked matches", f"{metrics['locked_updated']:,}")
-row1[1].metric("Linked automatically", f"{metrics['auto_linked']:,}")
-row1[2].metric("To review in file 2", f"{metrics['requiring_review']:,}")
-row1[3].metric("Not selling in SellUp", f"{metrics['not_selling']:,}")
-row1[4].metric("Not on SellUp yet", f"{metrics['not_yet']:,}")
+row1[1].metric("Linked by you", f"{metrics['reviewer_linked']:,}")
+row1[2].metric("Linked automatically", f"{metrics['auto_linked']:,}")
+row1[3].metric("To review in file 2", f"{metrics['requiring_review']:,}")
+row1[4].metric(
+    "Suspect locks", f"{len(suspect):,}",
+    delta=None if not suspect else "check these", delta_color="inverse",
+)
 
 row2 = st.columns(5)
 row2[0].metric("Quantity cells written", f"{write_report.cells_written:,}")
 row2[1].metric("Units synced", f"{metrics['units_synced']:,}")
-row2[2].metric("Listings delisted (set 0)", f"{metrics['delisted']:,}")
-row2[3].metric("Already correct", f"{write_report.cells_unchanged:,}")
-row2[4].metric("Warnings", f"{len(result.warnings):,}")
+row2[2].metric("Delisted (set 0)", f"{metrics['delisted']:,}")
+row2[3].metric("Crosswalk overridden", f"{metrics['displaced']:,}")
+row2[4].metric("Quarantined", f"{metrics['quarantined']:,}")
 
 for issue in result.issues:
     if issue.severity == "warning":
@@ -394,12 +421,13 @@ for issue in result.issues:
 
 
 # --------------------------------------------------------------------------
-# Read-only tabs
+# Tabs
 # --------------------------------------------------------------------------
-tab_review, tab_locked, tab_classified, tab_diag = st.tabs(
+tab_review, tab_locked, tab_orphans, tab_classified, tab_diag = st.tabs(
     [
         f"📋 To review ({result.unreviewed_count})",
         f"🔒 Locked matches ({len(result.locked)})",
+        f"🔎 Listings with no source ({len(result.match_review)})",
         f"🗂️ Classified ({len(result.not_selling) + len(result.not_yet)})",
         "🧪 Diagnostics",
     ]
@@ -424,10 +452,10 @@ with tab_review:
                         "Color": s.pos.colour,
                         "Qty": s.pos.available_qty,
                         "Condition": s.pos.slot,
-                        "Suggested SellUp SKU ID": (
+                        "Suggested SKU": (
                             s.suggestions[0].sellup.sku_id if s.suggestions else ""
                         ),
-                        "Suggested Listing": (
+                        "Suggested listing": (
                             s.suggestions[0].sellup.display if s.suggestions else ""
                         ),
                         "Confidence": (
@@ -438,17 +466,12 @@ with tab_review:
                     for s in result.new_skus
                 ]
             ),
-            use_container_width=True,
-            hide_index=True,
-            height=520,
+            use_container_width=True, hide_index=True, height=520,
         )
 
 with tab_locked:
     if not result.locked:
-        st.warning(
-            "No locked matches. Upload a SellUp SKU Registry or the seed "
-            "mapping file to carry your existing links over."
-        )
+        st.warning("No locked matches. Upload a SKU Registry or the seed mapping.")
     else:
         locked_frame = pd.DataFrame(
             [
@@ -457,11 +480,9 @@ with tab_locked:
                     "SellUp SKU ID": m.sellup.sku_id,
                     "SellUp Model": m.sellup.model,
                     "Storage": m.sellup.storage_label,
-                    "Connectivity": m.sellup.connectivity_label,
                     "SellUp Colour": m.sellup.colour,
                     "Condition": m.slot,
-                    "LOCKED Masterlist ID(s)": m.masterlist_ids,
-                    "ML Category": m.masterlist_categories,
+                    "Masterlist ID(s)": m.masterlist_ids,
                     "ML Model(s)|Color": m.masterlist_labels,
                     "ML Available Qty": m.available_quantities,
                     "Target Stock": m.target_stock,
@@ -474,8 +495,8 @@ with tab_locked:
         query = left.text_input("Filter", placeholder="SKU, model or colour…")
         slot_filter = mid.selectbox("Condition", ["All", *config.ALL_SLOTS])
         origin_filter = right.selectbox(
-            "How linked", ["All", config.LINKED_BY_AUTO, config.LINKED_BY_SEED,
-                           config.LINKED_BY_REVIEWER]
+            "How linked",
+            ["All", config.LINKED_BY_REVIEWER, config.LINKED_BY_AUTO, config.LINKED_BY_SEED],
         )
 
         view = locked_frame
@@ -489,12 +510,39 @@ with tab_locked:
         if origin_filter != "All":
             view = view[view["How linked"] == origin_filter]
 
-        st.caption(
-            f"{len(view):,} of {len(locked_frame):,} locked matches. Filter "
-            f"**How linked** to `{config.LINKED_BY_AUTO}` to spot-check the "
-            "automatic ones."
-        )
+        st.caption(f"{len(view):,} of {len(locked_frame):,} locked matches.")
         st.dataframe(view, use_container_width=True, hide_index=True, height=520)
+
+with tab_orphans:
+    st.caption(
+        "SellUp listings holding stock. Those that lost their POS source are "
+        "written to 0; those that never had one are left untouched and appear "
+        "on the Match Review tab of file 2."
+    )
+    if result.match_review:
+        st.dataframe(
+            pd.DataFrame(
+                [
+                    {
+                        "SellUp Sheet": o.sellup.sheet,
+                        "SellUp SKU ID": o.sellup.sku_id,
+                        "SellUp Model": o.sellup.model,
+                        "Storage": o.sellup.storage_label,
+                        "SellUp Colour": o.sellup.colour,
+                        "Condition": o.slot,
+                        "Current Seller Stock": o.current_qty,
+                        "Status": (
+                            "lost its POS source — set to 0" if o.was_linked
+                            else "no POS source — left untouched"
+                        ),
+                    }
+                    for o in result.match_review
+                ]
+            ),
+            use_container_width=True, hide_index=True, height=460,
+        )
+    else:
+        st.success("Every SellUp listing with stock has a POS source.")
 
 with tab_classified:
     left, right = st.columns(2)
@@ -519,51 +567,39 @@ with tab_classified:
                             for r in rows
                         ]
                     ),
-                    use_container_width=True,
-                    hide_index=True,
-                    height=380,
+                    use_container_width=True, hide_index=True, height=360,
                 )
             else:
                 st.caption("Nothing classified yet.")
 
-    st.markdown(f"#### Match Review — no POS source ({len(result.match_review):,})")
-    st.caption(
-        "SellUp listings previously reviewed as having no POS counterpart. "
-        "Their Seller Stock is left untouched."
-    )
-    if result.match_review:
+    if result.suppressed:
+        st.markdown(f"#### Do Not Link ({len(result.suppressed):,})")
+        st.caption("Rows you have told the tool never to match.")
         st.dataframe(
             pd.DataFrame(
                 [
                     {
-                        "SellUp Sheet": r.sheet,
-                        "SellUp SKU ID": r.sku_id,
-                        "SellUp Model": r.model,
-                        "Storage": r.storage_label,
-                        "Connectivity": r.connectivity_label,
-                        "SellUp Colour": r.colour,
+                        "Masterlist Stock Type ID": r.stock_type_id,
+                        "Brand": r.brand,
+                        "Model": r.model,
+                        "Color": r.colour,
+                        "Available Qty": r.available_qty,
                     }
-                    for r in result.match_review
+                    for r in result.suppressed
                 ]
             ),
-            use_container_width=True,
-            hide_index=True,
-            height=300,
+            use_container_width=True, hide_index=True, height=240,
         )
 
 with tab_diag:
     st.markdown("#### POS masterlist")
     st.json(summarise_pos(pos_data))
-
     if seed_data is not None:
         st.markdown("#### Seed mapping")
         st.json(summarise_seed(seed_data))
 
     st.markdown("#### Excluded POS rows")
-    st.caption(
-        "Rows deliberately kept out of the SellUp sync: TELCO stock, export "
-        "sets and freebies."
-    )
+    st.caption("TELCO stock, export sets and freebies.")
     if pos_data.exclusions:
         st.dataframe(
             pd.DataFrame(
@@ -579,7 +615,5 @@ with tab_diag:
                     for e in pos_data.exclusions
                 ]
             ),
-            use_container_width=True,
-            hide_index=True,
-            height=320,
+            use_container_width=True, hide_index=True, height=320,
         )
